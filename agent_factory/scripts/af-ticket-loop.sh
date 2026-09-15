@@ -2582,6 +2582,34 @@ af_dir_in_use(){   # $1 = directory
   return 1
 }
 
+# UNCOMMITTED WORK IS NOT ON THE BRANCH. sweep_worktrees purges a worker tree on the premise that
+# "the tree is scratch; the branch is the artifact" -- true of COMMITTED work only. A worker that runs
+# out of round time mid-ticket has its edits in the tree and nowhere else, and purging the tree
+# destroyed them: mvpvue round #5 lost ~56 minutes of T03 (137 shell calls, 81 file writes) this way.
+# So before any purge, snapshot the tree's uncommitted state into refs/af-preserved/<branch>-<epoch>
+# through a THROWAWAY index: the worker's own index, working files and branch are untouched, and the
+# snapshot is a ref, not a branch, so the orphan-landing sweep never merges half-finished work into
+# the build. Prints the ref when something was preserved; prints nothing for a clean tree.
+af_preserve_uncommitted(){   # $1 = worktree path
+  local path="$1" br tree base commit ref idx
+  [ -n "$(git -C "$path" status --porcelain --untracked-files=all 2>/dev/null)" ] || return 0
+  br=$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached)
+  base=$(git -C "$path" rev-parse HEAD 2>/dev/null) || return 1
+  idx="${TMPDIR:-/tmp}/af-preserve-$$-$RANDOM.idx"
+  if ! GIT_INDEX_FILE="$idx" git -C "$path" read-tree HEAD 2>/dev/null \
+     || ! GIT_INDEX_FILE="$idx" git -C "$path" add -A -- . ':(exclude,glob)**/test-results/**' 2>/dev/null \
+     || ! tree=$(GIT_INDEX_FILE="$idx" git -C "$path" write-tree 2>/dev/null); then
+    rm -f "$idx"; return 1
+  fi
+  rm -f "$idx"
+  [ "$tree" = "$(git -C "$path" rev-parse "$base^{tree}")" ] && return 0
+  commit=$(git -C "$path" -c user.name="af-build" -c user.email="af-build@praxis.local" commit-tree "$tree" -p "$base" \
+    -m "wip: uncommitted worker output preserved before worktree purge (af-ticket-loop) -- branch $br") || return 1
+  ref="refs/af-preserved/${br//\//-}-$(date +%s)"
+  git -C "$path" update-ref "$ref" "$commit" || return 1
+  echo "$ref"
+}
+
 sweep_worktrees(){
   cd "$WT" || return 0
   local kept=0 main_wt
@@ -2618,6 +2646,10 @@ sweep_worktrees(){
     # its ticket is finished. Leaving the trees instead is what put 29 of them on one box and filled
     # a 98GB volume, and what left 14 lying around here holding 10+ commits each. The tree is
     # scratch; the branch is the artifact.
+    local preserved; preserved=$(af_preserve_uncommitted "$path" || true)
+    if [ -n "$preserved" ]; then
+      say "preserved UNCOMMITTED work from $path at $preserved -- a ref, not a branch, so it is never auto-merged; recover with: git worktree add <dir> $preserved"
+    fi
     if [ -n "$head" ] && git merge-base --is-ancestor "$head" HEAD 2>/dev/null; then
       af_force_remove_worktree "$path" \
         && say "purged integrated worktree $path" \
