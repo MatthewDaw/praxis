@@ -42,7 +42,7 @@ _FUNCS = (
     "af_main_worktree", "af_scratch_roots", "af_scratch_globs", "af_is_scratch",
     "af_is_human_branch", "af_is_worktree_branch", "af_is_factory_named",
     "af_worktree_is_removable", "af_force_remove_worktree", "af_stragglers",
-    "af_dir_in_use", "af_is_owed_merge", "sweep_worktrees",
+    "af_dir_in_use", "af_is_owed_merge", "af_preserve_uncommitted", "sweep_worktrees",
 )
 
 

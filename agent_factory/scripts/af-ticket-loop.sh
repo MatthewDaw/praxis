@@ -1639,6 +1639,9 @@ import sys
 import _praxis, _ticket_state as ts
 p=sys.argv[1]
 f=_praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}')
+# Post-MVP tickets owe the BUILD nothing (build_target.excluded_post_mvp): counting them would keep
+# the drain gate open forever while they wait for an owner's go-ahead.
+f=[x for x in f if (x.get('meta') or {}).get('scope') != 'post-mvp']
 print(sum(1 for x in f if ts.owes_work(x)))
 PYEOF
 }
@@ -1704,6 +1707,12 @@ for t in ts.ready_tickets(facts):
     m = t.get('meta') or {}
     rid = m.get('requirement_id') or t.get('id')
     if not rid:
+        continue
+    # Post-MVP tickets are out of the build entirely (build_target.excluded_post_mvp). Filtered AFTER
+    # ready_tickets, which must still see them to judge dependencies; no MVP ticket depends on one.
+    # Without this the loop dispatched PM6, a budget-gated Cognito migration, the moment its
+    # prerequisite finished (mvpvue, 2026-09-15).
+    if m.get('scope') == 'post-mvp':
         continue
     # A ticket parked on a manual sign-off is not dispatchable work: its automated obligations are
     # already met, so a worker can only rebuild what exists and fail the same human gate again —
