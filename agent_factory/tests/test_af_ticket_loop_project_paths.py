@@ -69,5 +69,5 @@ def test_nothing_in_scope_means_no_commit(tmp_path: Path) -> None:
 
 def test_the_verifier_is_told_the_project_scope() -> None:
     text = SCRIPT.read_text()
-    assert "Tickets just merged: $ids_csv.$scope_note Each was built" in text
+    assert "Tickets just merged: $ids_csv.${scope_note:-}${ff_note:-} Each was built" in text
     assert "THIS PROJECT'S CODE IS ONLY UNDER: ${AF_PROJECT_PATHS}" in text
