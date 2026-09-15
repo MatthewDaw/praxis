@@ -475,7 +475,13 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     GROK_BIN="${GROK_BIN:-$HOME/.grok/bin/grok}"
     GROK_AUTH="$HOME/.grok/auth.json"
     AF_GROK_MODEL="${AF_GROK_MODEL:-grok-4.6}"
-    BACKEND_NOTE="xAI Grok subscription (OAuth), model=${AF_GROK_MODEL} — spends xAI subscription, NOT API credits"
+    # AF_GROK_EFFORT (xhigh|high|medium|low) sets --reasoning-effort; unset keeps Grok's own default.
+    # Worker time is dominated by per-request model latency, not by tests (mvpvue 2026-09-15: ~100
+    # requests per ticket at 40-55s each, against ~80 min of shell time across 14 sessions), so effort
+    # is the lever for round length.
+    local grok_effort_flag=""
+    [ -n "${AF_GROK_EFFORT:-}" ] && grok_effort_flag="--reasoning-effort ${AF_GROK_EFFORT}"
+    BACKEND_NOTE="xAI Grok subscription (OAuth), model=${AF_GROK_MODEL}${AF_GROK_EFFORT:+ effort=${AF_GROK_EFFORT}} — spends xAI subscription, NOT API credits"
     if [ ! -x "$GROK_BIN" ]; then
       echo "[backend] FATAL: grok requested but $GROK_BIN is missing or not executable." >&2
       echo "[backend]   fix: curl -fsSL https://x.ai/cli/install.sh | bash" >&2
@@ -486,9 +492,9 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
       echo "[backend]   fix, once, as ec2-user:  grok login --device-auth" >&2
       return 1
     fi
-    CLAUDE_LAUNCH="unset XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN; export PATH=\"\$HOME/.grok/bin:\$HOME/.local/bin:\$PATH\"; ${GROK_BIN} --model ${AF_GROK_MODEL} --always-approve"
+    CLAUDE_LAUNCH="unset XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN; export PATH=\"\$HOME/.grok/bin:\$HOME/.local/bin:\$PATH\"; ${GROK_BIN} --model ${AF_GROK_MODEL} ${grok_effort_flag} --always-approve"
     local grok_ok=0
-    af_probe_generation grok "cd /tmp; unset XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN; timeout 120 '$GROK_BIN' --model '$AF_GROK_MODEL' --always-approve -p 'Reply with exactly: PONG' --output-format json" && grok_ok=1
+    af_probe_generation grok "cd /tmp; unset XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN; timeout 120 '$GROK_BIN' --model '$AF_GROK_MODEL' ${grok_effort_flag} --always-approve -p 'Reply with exactly: PONG' --output-format json" && grok_ok=1
     # The WRONG-BILL refusal reads the same transcript, and is checked even on a live probe: a
     # generation that succeeded is not acceptable if it succeeded by spending API credits.
     if af_ihas "$AF_PROBE_OUTPUT" '"apiKeySource"[[:space:]]*:[[:space:]]*"user"'; then
