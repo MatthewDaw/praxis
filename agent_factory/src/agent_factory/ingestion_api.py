@@ -220,7 +220,7 @@ def transition_enforcement_state(current_state: str | None, event: str) -> str:
 RUN_BODY_ALLOWED_VERBS = frozenset({
     "pytest", "python", "python3", "npm", "npx", "make", "grep", "ruff", "mypy",
     "eslint", "playwright",
-    "aws", "rclone", "curl",
+    "aws", "rclone", "curl", "git",
 })
 # Sub-shape constraints for the verbs whose FIRST argument decides whether the command is a test
 # runner or an arbitrary-code evaluator.
@@ -239,6 +239,11 @@ _AWS_ALLOWED_OPERATIONS = {
 # s3api is prefix-shaped rather than enumerated: every read verb it has is list-*/head-*, and every
 # mutation is put-*/delete-*/create-*/copy-*/restore-*.
 _AWS_S3API_READ_PREFIXES = ("list-", "head-")
+# git is admitted ONLY as a read-only tree comparison. A check whose whole logic is its own command is
+# the one kind a worker cannot defeat by editing project code (mvpvue T01B edited its containment
+# guard to allow the very file it was adding), and "nothing outside this directory changed" needs one.
+_GIT_ALLOWED_SUBCOMMANDS = frozenset({"diff"})
+_GIT_DIFF_ALLOWED_FLAGS = frozenset({"--quiet", "--exit-code", "--name-only", "--name-status", "--stat"})
 _RCLONE_ALLOWED_OPERATIONS = frozenset({"lsjson", "ls", "lsf", "lsl", "size", "about"})
 # curl is allowlisted TOKEN BY TOKEN: anything not named here is refused, so ``-d``/``--data-raw``/
 # ``-T``/``-F``/``-o``/``--upload-file`` need no denylist entry to be rejected, and neither does the
@@ -550,6 +555,30 @@ def _validate_allowlisted_argv(argv: list[str], body: str) -> None:
             )
     elif verb == "curl":
         _validate_curl_argv(rest, body)
+    elif verb == "git":
+        _validate_git_argv(rest, body)
+
+
+def _validate_git_argv(rest: list[str], body: str) -> None:
+    """``git`` is admitted ONLY as ``git diff`` with output-shaping flags, revisions and pathspecs. No
+    global option (``-C``, ``-c``) may precede the subcommand, and no flag that writes a file, runs an
+    external program or leaves the repository (``--output``, ``--ext-diff``, ``--textconv``,
+    ``--no-index``) is accepted: every flag not named in :data:`_GIT_DIFF_ALLOWED_FLAGS` is refused."""
+    if not rest or rest[0] not in _GIT_ALLOWED_SUBCOMMANDS:
+        raise RunBodyRejected(
+            f"drafted run body {body!r} must be 'git <{'|'.join(sorted(_GIT_ALLOWED_SUBCOMMANDS))}> ...' "
+            f"-- a check only COMPARES trees, it never changes the repository"
+        )
+    pathspecs = False
+    for token in rest[1:]:
+        if token == "--":
+            pathspecs = True
+            continue
+        if not pathspecs and token.startswith("-") and token not in _GIT_DIFF_ALLOWED_FLAGS:
+            raise RunBodyRejected(
+                f"drafted run body {body!r} passes git diff the flag {token!r}; only "
+                f"{sorted(_GIT_DIFF_ALLOWED_FLAGS)} are allowed"
+            )
 
 
 def _validate_aws_argv(rest: list[str], body: str) -> None:
