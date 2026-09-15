@@ -3576,7 +3576,7 @@ PYEOF
 
   local ff_note=""
   if af_round_is_fast_forward "$premerge" "$@"; then
-    ff_note=" THIS ROUND WAS A FAST-FORWARD: one ticket, no merge commit, so the merged tree is byte-identical to the tip its worker tested, and workers run their final checks on a clean checkout of their committed tip. So do NOT re-run the whole-repo gates in Step 1 and do NOT re-run acceptance tests in lens B. Instead read the ticket's pinned validations from Praxis and confirm every one PASSED with a ran_at LATER than this tip's commit time (git log -1 --format=%ct HEAD). If any pinned check is missing, failed, or passed before that commit was made, the skip does not apply: run the gates exactly as Step 1 says. Lens C (test integrity), step 3 and step 4 still run in full."
+    ff_note=" THIS ROUND WAS A FAST-FORWARD: one ticket, no merge commit, so the merged tree is byte-identical to the tip its worker tested. You may SKIP re-running a gate ONLY IF that exact command is one of the ticket's pinned validations in Praxis and PASSED with a ran_at LATER than this tip's commit time (git log -1 --format=%ct HEAD). Every other whole-repo gate -- in particular any full build, typecheck, lint, format or test suite the ticket's pinned checks do NOT include -- still runs exactly as Step 1 says, because a ticket's pinned set follows its tags, not the code it touched: mvpvue T06 (tagged backend) changed four frontend files that failed the format gate its pins never ran. Lens B may skip re-running an acceptance test only under the same condition. Lens C (test integrity), step 3 and step 4 still run in full."
   fi
   local scope_note=""
   if [ -n "${AF_PROJECT_PATHS:-}" ]; then

@@ -62,6 +62,10 @@ def test_the_verifier_is_told_to_skip_only_on_a_fast_forward() -> None:
     assert "Tickets just merged: $ids_csv.${scope_note:-}${ff_note:-} Each was built" in SRC
     assert "if af_round_is_fast_forward \"$premerge\" \"$@\"; then" in SRC
     assert "ran_at LATER than this tip's commit time" in SRC
+    # The skip covers ONLY gates the worker ran: a pinned set follows tags, not touched code (mvpvue T06).
+    assert "ONLY IF that exact command is one of the ticket's pinned validations" in SRC
+    assert "Every other whole-repo gate" in SRC
+    assert "a ticket's pinned set follows its tags, not the code it touched" in SRC
 
 
 def test_workers_run_final_checks_on_a_clean_checkout() -> None:
