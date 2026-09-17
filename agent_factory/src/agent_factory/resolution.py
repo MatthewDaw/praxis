@@ -106,13 +106,38 @@ def resolve_findings_for_check(meta: dict[str, Any], check_id: str, *,
     exact hole the finding was invented to plug. The round that authored those findings answers them
     instead, via :func:`resolve_findings_for_round`.
 
+    The one exception is an unattributed TWIN: a post-merge regression records its failure twice —
+    the ingested lesson that carries this check (its reason embeds ``WHAT FAILED: <reason>``) and
+    the loop's own unattributed copy of that same ``<reason>``. They are one finding, so they are
+    answered together; left open, the twin re-regressed a ticket whose defect was already gone.
+
     Returns the full accumulated ``regression_detail`` list, ready to write back verbatim (same
     contract as :func:`hooks._ticket_state.resolve_finding`)."""
     scope = str(check_id or "").strip()
     if not scope:
         raise ValueError("check_id is required; use resolve_findings_for_round() to answer the "
                          "unattributed findings a verification round authored")
-    return _stamp(_ts.regression_details(meta), lambda d: finding_check_id(d) == scope, resolved_by)
+    details = _stamp(_ts.regression_details(meta), lambda d: finding_check_id(d) == scope, resolved_by)
+    return resolve_answered_twins({**meta, "regression_detail": details}, resolved_by=resolved_by)
+
+
+def resolve_answered_twins(meta: dict[str, Any], *,
+                           resolved_by: str | None = None) -> list[dict[str, Any]]:
+    """Resolve each open UNATTRIBUTED finding whose failure is already answered by its attributed
+    twin: an ingested finding, now resolved, whose reason embeds ``WHAT FAILED: <that reason>``.
+
+    Both halves come from one post-merge regression, so the twin carries no evidence the resolved
+    half did not. Anything without such a twin is left untouched. Returns the full list."""
+    details = _ts.regression_details(meta)
+    answered = [str(d.get("reason") or "") for d in details
+                if d.get("resolved") and finding_check_id(d) != UNATTRIBUTED]
+
+    def is_twin(d: dict[str, Any]) -> bool:
+        reason = str(d.get("reason") or "").strip()
+        return (finding_check_id(d) == UNATTRIBUTED
+                and any(f"WHAT FAILED: {reason}" in a for a in answered))
+
+    return _stamp(details, is_twin, resolved_by)
 
 
 def resolve_unattributed_findings(meta: dict[str, Any], *,

@@ -4089,13 +4089,18 @@ for f in _praxis.facts_by(category="requirement", **kw) or []:
     rid = str(m.get("requirement_id") or f.get("id"))
     if rid not in want or m.get(ts.M_BUILD_STATE) != "finished":
         continue
+    # A verification finding's unattributed twin is answered once its attributed half is resolved;
+    # left open it has no check to re-run, and finding_guard re-regresses an already-fixed ticket.
+    open_before = len(ts.open_findings(m))
+    m[ts.M_REGRESSION_DETAIL] = resolution.resolve_answered_twins(
+        m, resolved_by=f"post-merge verification of round #{rnd}: its attributed twin is resolved")
     open_now = ts.open_findings(m)
-    if not open_now:
+    resolved_any = len(open_now) < open_before
+    if not open_now and not resolved_any:
         continue
     # R17's scoping unit is the CHECK, so the ticket's open findings are handled one check at a
     # time. Findings this loop authored itself (conflict resolution, post-merge verification) carry
     # no check_id and group under "".
-    resolved_any = False
     for check_id in sorted({str(d.get("check_id") or "") for d in open_now}):
         reported = recheck.get(rid, {}).get(check_id)
         if reported is None:

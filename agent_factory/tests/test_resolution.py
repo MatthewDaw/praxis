@@ -227,6 +227,51 @@ def test_a_passing_check_does_not_answer_an_unattributed_loop_finding():
     assert updated[1]["resolved"] is True                   # check-a's own finding: answered
 
 
+def test_a_resolved_check_answers_the_verification_twin_it_was_ingested_from():
+    """One post-merge regression writes the SAME failure twice: the ingested lesson (carrying the
+    drafted check_id, its reason embedding "WHAT FAILED: <reason>") and the loop's own unattributed
+    copy of <reason>. Resolving only the attributed half left the twin open forever, so the
+    zero-commit guard re-regressed an already-fixed ticket (mvpvue T08, 2026-09-17). The twin is
+    answered with its check; an unrelated unattributed finding still is not."""
+    twin_reason = "T08's upload client uses unchecked `as` assertions"
+    ingested = {"source": "ingestion-api", "check_id": "fl-609f8e32bf65",
+                "reason": "post-merge verification of round #1 found ticket T08's work did not "
+                          f"survive integration into the merged tree. WHAT FAILED: {twin_reason} "
+                          "EVIDENCE: check:architecture exits 1"}
+    twin = {"round": "1", "source": "post-merge-verification", "reason": twin_reason,
+            "evidence": "check:architecture exits 1", "required_fix": "narrow instead of `as`"}
+    meta = {"regression_detail": [ingested, twin, dict(LOOP_VERIFICATION_FINDING)]}
+    updated = resolution.resolve_findings_for_check(meta, "fl-609f8e32bf65", resolved_by="verifier")
+    assert updated[0]["resolved"] is True
+    assert updated[1]["resolved"] is True
+    assert updated[1]["resolved_by"] == "verifier"
+    assert updated[2].get("resolved", False) is False
+
+
+def test_a_twin_left_open_by_an_earlier_round_is_answered_by_its_resolved_check():
+    """The live state: the attributed half resolved in an earlier round, so no later round re-runs
+    that check, and only the twin reads open."""
+    twin_reason = "T08's upload client uses unchecked `as` assertions"
+    ingested = {"source": "ingestion-api", "check_id": "fl-609f8e32bf65", "resolved": True,
+                "reason": f"post-merge verification ... WHAT FAILED: {twin_reason} EVIDENCE: x"}
+    twin = {"round": "1", "source": "post-merge-verification", "reason": twin_reason}
+    other = dict(LOOP_VERIFICATION_FINDING)
+    updated = resolution.resolve_answered_twins(
+        {"regression_detail": [ingested, twin, other]}, resolved_by="round #6")
+    assert updated[1]["resolved"] is True
+    assert updated[1]["resolved_by"] == "round #6"
+    assert updated[2].get("resolved", False) is False
+
+
+def test_an_open_attributed_finding_does_not_answer_its_twin():
+    """Until the check itself is answered, its twin stays open too."""
+    twin_reason = "the CLI entry point is missing"
+    ingested = {"check_id": "check-z", "reason": f"... WHAT FAILED: {twin_reason} EVIDENCE: x"}
+    twin = {"source": "post-merge-verification", "reason": twin_reason}
+    updated = resolution.resolve_answered_twins({"regression_detail": [ingested, twin]})
+    assert updated[1].get("resolved", False) is False
+
+
 def test_resolve_findings_for_check_refuses_an_empty_check_id():
     """Guard against "" silently becoming a wildcard that resolves every unattributed finding."""
     with pytest.raises(ValueError):
@@ -467,6 +512,48 @@ def test_the_drivers_resolution_block_answers_the_findings_the_driver_itself_wri
     details = written[-1]["regression_detail"]
     assert [d.get("resolved") for d in details] == [True, True]
     assert all("round #7" in str(d.get("resolved_by")) for d in details)
+
+
+def test_the_drivers_resolution_block_closes_a_twin_whose_check_already_resolved(
+    monkeypatch, tmp_path,
+):
+    """mvpvue T08, 2026-09-17: the check-backed half resolved in round #4, the unattributed twin
+    stayed open, and the verifier — with no check to run for it — reported it failing. Every
+    zero-commit rebuild was then re-regressed. The driver must close the twin and write it back."""
+    import _praxis as bare_praxis
+    import _ticket_state as bare_ts  # noqa: F401 - the driver binds the same module
+
+    script = (Path(__file__).resolve().parents[1] / "scripts" / "af-ticket-loop.sh").read_text()
+    block = next(b for b in re.findall(r"<<'PYEOF'[^\n]*\n(.*?)\n *PYEOF\n", script, re.S)
+                 if "resolve_or_defeat" in b)
+    twin_reason = "T08's upload client uses unchecked `as` assertions"
+    fact = {"id": "cid-8", "cid": "cid-8", "meta": {
+        "requirement_id": "T08", "build_state": "finished", "regression_detail": [
+            {"source": "ingestion-api", "check_id": "fl-609f8e32bf65", "resolved": True,
+             "reason": f"post-merge verification ... WHAT FAILED: {twin_reason} EVIDENCE: x"},
+            {"round": "1", "source": "post-merge-verification", "reason": twin_reason}]}}
+    written: list[dict[str, Any]] = []
+    monkeypatch.setattr(bare_praxis, "facts_by", lambda **kw: [fact])
+    monkeypatch.setattr(bare_praxis, "write_build_state",
+                        lambda cid, meta, **kw: written.append(meta) or {"id": cid})
+
+    verdict = tmp_path / "verdict.json"
+    verdict.write_text('{"verdict": "pass", "regressed": [], "findings_recheck": ['
+                       '{"id": "T08", "check_id": null, "check_passed": false, '
+                       '"symptom_present": true}]}')
+    old_argv = sys.argv
+    sys.argv = ["-", "mvpvue", "6", str(verdict), str(tmp_path), "T08"]
+    try:
+        exec(compile(block, "<af-ticket-loop:resolution>", "exec"), {"__name__": "__main__"})
+    except SystemExit:
+        pass
+    finally:
+        sys.argv = old_argv
+
+    assert written, "the driver wrote nothing back"
+    details = written[-1]["regression_detail"]
+    assert [bool(d.get("resolved")) for d in details] == [True, True]
+    assert "round #6" in details[1]["resolved_by"]
 
 
 def test_caller_supplied_verdict_still_wins_and_is_recorded_as_such(_stubbed_backend, failing_repo):
