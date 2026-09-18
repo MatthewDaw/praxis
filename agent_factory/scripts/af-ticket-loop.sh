@@ -1646,8 +1646,11 @@ import _praxis, _ticket_state as ts
 p=sys.argv[1]
 f=_praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}')
 # Post-MVP tickets owe the BUILD nothing (build_target.excluded_post_mvp): counting them would keep
-# the drain gate open forever while they wait for an owner's go-ahead.
-f=[x for x in f if (x.get('meta') or {}).get('scope') != 'post-mvp']
+# the drain gate open forever while they wait for an owner's go-ahead. AF_INCLUDE_POST_MVP=1 is the
+# owner saying that go-ahead is given, so they count like any other ticket.
+import os
+if os.environ.get('AF_INCLUDE_POST_MVP') != '1':
+    f=[x for x in f if (x.get('meta') or {}).get('scope') != 'post-mvp']
 print(sum(1 for x in f if ts.owes_work(x)))
 PYEOF
 }
@@ -1700,7 +1703,7 @@ require_blessed_plan(){   # -> 0 = blessed, dispatch may proceed; 1 = caller mus
 
 ready_batch(){  # -> space-separated ids of the dependency-ready frontier, capped at $2
   $PY - "$PROJECT" "${1:-15}" <<'PYEOF' 2>/dev/null
-import sys
+import os, sys
 import _praxis, _ticket_state as ts
 p, cap = sys.argv[1], int(sys.argv[2])
 # ready_tickets must see the WHOLE requirement set, not just the incomplete slice: it derives the
@@ -1718,7 +1721,7 @@ for t in ts.ready_tickets(facts):
     # ready_tickets, which must still see them to judge dependencies; no MVP ticket depends on one.
     # Without this the loop dispatched PM6, a budget-gated Cognito migration, the moment its
     # prerequisite finished (mvpvue, 2026-09-15).
-    if m.get('scope') == 'post-mvp':
+    if m.get('scope') == 'post-mvp' and os.environ.get('AF_INCLUDE_POST_MVP') != '1':
         continue
     # A ticket parked on a manual sign-off is not dispatchable work: its automated obligations are
     # already met, so a worker can only rebuild what exists and fail the same human gate again —
