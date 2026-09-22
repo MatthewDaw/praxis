@@ -14,7 +14,12 @@ from knowledge.ml_registry.services.registry_finalize import (
     RegistryFinalizer,
 )
 from knowledge.ml_registry.storage.registry import _PRODUCTION_CAPABILITY
-from knowledge.ml_registry.tests.test_registry_native_adjudication import registry_with_champion
+from knowledge.ml_registry.tests.test_registry_native_adjudication import (
+    SHA,
+    create_run,
+    registry_with_champion,
+)
+from knowledge.ml_registry.services.registry_aliases import adopt_run_and_promote
 
 
 def view(registry: Registry) -> CampaignView:
@@ -200,3 +205,36 @@ def test_pending_projection_refuses_moved_upstream_before_event_append(tmp_path:
         except Exception as exc:
             raise RegistryFinalizationError(str(exc)) from exc
     assert len(registry.list_events()) == before
+
+def test_identical_bytes_under_a_second_run_still_finalize(tmp_path: Path) -> None:
+    """Two runs may legitimately carry the same weights, and the later one may be the champion.
+
+    Re-registering a pinned upstream model -- the same checkpoint, adopted again so it can serve
+    production -- produces a second artifact row with the SAME content address. The champion
+    artifact must then be resolved by run as well as by content, or the model version can never be
+    finalized.
+    """
+    registry = registry_with_champion(tmp_path)
+    create_run(registry, "again", 0.68)
+    artifact = registry.create_artifact(run_id="again", kind="checkpoint", content=b"base",
+                                        schema_version="1")
+    assert artifact == registry.rows("model_versions")[0]["artifact_id"]
+    adopt_run_and_promote(
+        registry, run_id="again", model_id="model", reason="serve the same weights",
+        model_version={"version": 2, "artifact_id": artifact, "checksum": artifact,
+                       "family_version": "linear@2", "code_sha": SHA, "preprocessing_hash": "prep",
+                       "calibration": {}, "thresholds": {},
+                       "compat_result": {"head_sha": SHA, "passed": True, "at": 1},
+                       "status": "active"})
+
+    campaign = view(registry)
+    run = next(row for row in registry.rows("runs") if row["run_id"] == "again")
+    campaign = CampaignView(
+        campaign.binding, campaign.experiment, campaign.registered_model, campaign.model_fact,
+        (IdeaInventory(SimpleNamespace(id=run["idea_id"]), run["idea_id"], run["stage"], (),
+                       (run,)),),
+    )
+    result = finalizer(registry).finalize(campaign, version=2, reason="release")
+
+    assert result.production_alias.version == 2
+    assert result.model_version.artifact_id == artifact

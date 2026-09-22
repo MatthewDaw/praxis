@@ -170,9 +170,15 @@ class RegistryFinalizer:
             raise RegistryFinalizationError("champion run does not belong to the bound experiment")
         if not any(candidate["run_id"] == run["run_id"] for candidate in view.runs):
             raise RegistryFinalizationError("champion run is not the campaign view's adopted lineage")
+        # Look the artifact up by BOTH its content id and its run. Artifact ids are content
+        # addresses, so two runs that produced identical bytes share one -- re-registering the same
+        # pinned upstream weights under a second run is exactly that case. Matching on the content
+        # alone returns whichever row was written first and then refuses it for belonging to the
+        # wrong run, which no amount of correct registration can satisfy.
         artifact = next((row for row in self.registry.rows("artifacts")
-                         if row["artifact_id"] == version_row["artifact_id"]), None)
-        if artifact is None or artifact["run_id"] != run["run_id"]:
+                         if row["artifact_id"] == version_row["artifact_id"]
+                         and row["run_id"] == run["run_id"]), None)
+        if artifact is None:
             raise RegistryFinalizationError("champion artifact is not bound to its adopted run")
         if version_row["checksum"] != artifact["artifact_id"]:
             raise RegistryFinalizationError("model version checksum differs from its artifact")
