@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """
+RETIRED: no longer registered or enforced as a Stop hook. Direct execution exits
+successfully without contacting Praxis. The following describes the legacy helpers.
+
 build-completeness gate — THE SINGLE factory *Stop* hook.
 
 This is the one and only gate of the factory's collapsed gate spine. The old preflight / wireframe /
@@ -50,6 +53,11 @@ emergency escape hatch ``FACTORY_GATE_DISABLED=1`` (never silent — it prints w
 import json
 import os
 import sys
+
+# Retired Stop hook: old Claude sessions may still invoke this path.
+# Exit before loading helpers or contacting Praxis. Imported helpers remain for compatibility.
+if __name__ == "__main__":
+    sys.exit(0)
 
 # The helper modules (_praxis, _ticket_state) live next to this file. A bare hook
 # subprocess may be launched with an arbitrary cwd, so make sure our own directory is importable.
@@ -542,19 +550,3 @@ def _shout_crash(exc: BaseException) -> None:
             ts.stamp_gate_disable(proj, "GATE_CRASHED", type(exc).__name__)
     except Exception:  # noqa: BLE001 — durable record is best-effort; the stderr shout is the floor
         pass
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except SystemExit:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        # A crash in the gate's own logic must not wedge the agent forever. This catches only
-        # UNEXPECTED errors AFTER the fail-closed Praxis check above (which BLOCKS on its own); a
-        # bug here should not masquerade as "Praxis down", so we exit cleanly (allow) — but LOUDLY,
-        # never silently. A gate that disappears without a word is the exact failure this guard
-        # used to cause: three tickets went FINISHED with a mandatory check that had silently
-        # vanished, and nothing anywhere reported it.
-        _shout_crash(exc)
-        sys.exit(0)

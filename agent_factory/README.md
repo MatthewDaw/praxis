@@ -14,15 +14,13 @@ is state *on the ticket's Praxis node*. Every unit of work is the same loop:
 > pinned check, recording the pass on the ticket node → **FINISH** (release as finished) only when
 > every pinned check passed.
 
-A **single Stop-hook gate** (`hooks/build_completeness_gate.py`) reads Praxis live and enforces this
-loop. Praxis is a **hard dependency**: if it is unreachable the gate **fails closed and BLOCKS** — it
-never proceeds on a guess.
+Planning and build completeness Stop hooks have been permanently removed. A Praxis outage
+does not block Claude from ending a turn. The factory skills still use Praxis for their work.
 
 - **Knowing system** → [Praxis](https://github.com/Antonelli-Tech-Solutions/praxis) knowledge graph
   (retrieval, dedup, contradiction handling, provenance, requirement-completeness), via the
   `praxis_*` MCP tools. It is the single source of dynamic truth.
-- **Doing system + glue** → this repo: skills that drive the loop, the one gate hook that enforces
-  it, and small deterministic helpers in `src/agent_factory/`.
+- **Doing system + glue** → this repo: skills that drive the loop and small deterministic helpers in `src/agent_factory/`.
 
 ---
 
@@ -50,14 +48,8 @@ never proceeds on a guess.
                                └────────────────────►   → shipped
 ```
 
-There is **one** Stop-hook gate (`hooks/build_completeness_gate.py`). Everything the old per-phase
-gates used to enforce is now either a **ticket** or a **check** in Praxis, and this gate enforces the
-one question they all reduce to — *"are there incomplete tickets/checks for the active build scope?"*
-— read **live from Praxis, fail-closed**. There are **no `.factory/*.json` manifests** and no status
-files of any kind. The gate stays inert for ordinary repo conversation; the build loop arms it by
-**claiming** a ticket. A supervisor that fanned work out to sub-agents owns no claim of its own, so
-the gate is naturally inert for it while the builders (each claiming under their own session) work —
-no special subagent-deferral plumbing.
+The skills drive the ticket and validation loop explicitly. No planning or build completeness
+Stop hook is installed. There are no `.factory/*.json` build manifests.
 
 ---
 
@@ -76,7 +68,7 @@ In Claude Code, register the clone as a **local directory** marketplace and inst
 /plugin install agent-factory@agent-factory-local
 ```
 
-A *directory* marketplace reads the **live repo**, so the plugin's skills and gate hooks always
+A *directory* marketplace reads the **live repo**, so the plugin's skills and advisory hooks always
 reflect your working tree (restart the session to pick up edits). Run `/plugin` to confirm
 `agent-factory` is enabled.
 
@@ -94,24 +86,9 @@ silently skips) until you install it:
 
 ### 3. Python on PATH
 
-The gate hook is a Python script. **Ensure `python` is on PATH** — `python --version` should work in
-a plain shell. The gate's own logic fails **closed** (Praxis unreachable ⇒ it BLOCKS), but it can
-only do that if Claude Code can launch it; if `python` is missing the hook process can't start at
-all and the harness has nothing to enforce. Treat Python-on-PATH as a hard prerequisite, not
-optional.
+The helpers and advisory rapid-queue relay use Python. Ensure `python3` is on PATH.
 
-### 4. Raise the Stop-hook block cap
-
-A real plan/build legitimately makes the gates block many times while the model iterates. Claude
-Code's default cap (9 consecutive blocks → force-override) is far too low. In `~/.claude/settings.json`:
-
-```json
-"env": { "CLAUDE_CODE_STOP_HOOK_BLOCK_CAP": "250" }
-```
-
-(Takes effect next session.)
-
-### 5. Connect Praxis
+### 4. Connect Praxis
 
 The factory's memory is **Praxis** — a separate knowledge-graph service, reached over its `praxis_*`
 MCP tools. Installing this plugin does **not** install Praxis. You need:
@@ -265,29 +242,16 @@ The Praxis knowledge port is now an internal reference doc, not a skill:
 [**docs/af-memory-policy.md**](/docs/af-memory-policy.md) — the single policy for all Praxis
 reads/writes, cited by the four skills and the hooks.
 
-## The gate (`hooks/`)
+## Hooks (`hooks/`)
 
-The gate spine collapses to **one** Stop-hook forcing function, which reads Praxis live and
-fails **closed** (if Praxis is unreachable it BLOCKS, never passes):
+The planning and build completeness Stop hooks are retired and absent from `hooks.json`.
+Their old script paths exit successfully without reading stdin or contacting Praxis, so sessions
+that loaded an older registration can also stop normally. No disable environment variable is needed.
 
-| Gate | Enforces |
-|---|---|
-| `build_completeness_gate.py` | No incomplete tickets/checks for this scope — every pinned check on every in-scope ticket has passed (and the build is deployed unless opted out), read live from Praxis. |
-
-One further Stop hook rides alongside the gate but is **advisory, never a block**:
-`rapid_queue_relay.py` reports any af-rapid-queue capture that is not yet a Praxis ticket, so a
-drive-by request cannot be forgotten in the window before its write lands. It guards *intake*, not
-completion — blocking there would derail the session af-rapid-queue exists to leave undisturbed — and
-it is byte-silent with an empty spool.
-
-Everything the old per-phase gates (preflight / wireframe / plan-audit / review) did becomes a ticket
-or a check in Praxis: a wireframe surface with no screen is an **incomplete requirement**, a missing
-env dependency is a **failing check**, a review/audit finding is a **ticket/check**. The one
-completeness gate enforces them all. The gate reads its state live from Praxis via
-`hooks/_praxis.py` + `hooks/_ticket_state.py` — see
-[docs/factory-state-contract.md](/docs/factory-state-contract.md) for the canonical meta keys, the
-per-ticket lifecycle, and the lease/claim semantics. There are **no `.factory/*.json` status files**;
-`.factory/` is ignored only for genuinely-static local config.
+The remaining `rapid_queue_relay.py` Stop hook is advisory: it reports queued intake requests,
+never blocks, and stays silent with an empty spool. Ticket lifecycle and validation helpers
+remain available to the factory skills; see
+[docs/factory-state-contract.md](/docs/factory-state-contract.md).
 
 ## Key conventions
 
@@ -313,7 +277,8 @@ METHODOLOGY.md                 # the single canonical statement of how the facto
 CONSTITUTION.md                # the autonomous-run operating contract
 skills/                        # af-wireframe / intake / plan / audit / review / execute / churn / verify / memory
 hooks/
-  build_completeness_gate.py   # THE single Stop-hook gate (reads Praxis live, fails closed)
+  build_completeness_gate.py   # retired script path; direct execution exits successfully
+  plan_completeness_gate.py    # retired script path; direct execution exits successfully
   _praxis.py                   # stdlib-only Praxis HTTP client (the single source of dynamic truth)
   _ticket_state.py             # per-ticket lifecycle: claim/lease/heartbeat, resolve+pin checks, release
 src/agent_factory/

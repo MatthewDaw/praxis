@@ -27,6 +27,6 @@ is state ON THE TICKET'S Praxis node. To do ANY unit of work you follow exactly 
             (build_state="finished"). If any check fails, record a failed outcome — that regresses the
             ticket so it re-enters the FIND set and is re-done.
 
-Praxis is a HARD dependency: if it is unreachable the factory STOPS (the gate blocks) — it never proceeds
-on a guess. The single Stop gate (build_completeness) enforces this loop: it blocks the turn from ending
-while you hold an unfinished claim or scoped incomplete tickets remain.
+Praxis supplies ticket and validation state. If it is unreachable, report the outage and end
+the turn without claiming unverified work is complete. Planning and build completeness Stop
+hooks are retired; no hook blocks the session while Praxis is unavailable.

@@ -24,10 +24,8 @@ locks, no self-set "done" flags. Every unit of work is the same loop:
 **FIND** the next incomplete ticket in scope → **CLAIM** it (a heartbeated lease, not a lock) →
 **RESOLVE** which checks apply *by query* (the ticket never stores its own check list) → **BUILD** →
 **VERIFY** each pinned check, recording the pass on the ticket node → **FINISH** (release as finished)
-only when every pinned check passed. A **single** Stop-hook gate (`hooks/build_completeness_gate.py`)
-reads Praxis live and enforces this. Praxis is a **hard dependency**: if it is unreachable the gate
-**fails CLOSED and BLOCKS** — it never proceeds on a guess. The old multi-gate spine
-(preflight / wireframe / plan-audit / review) is gone: every one of those became a ticket or a check.
+only when every pinned check passed. Planning and build completeness Stop hooks are retired.
+If Praxis is unavailable, report that state and end the turn without claiming completion.
 
 ---
 
@@ -72,11 +70,9 @@ Keep iterating until ALL of the following hold:
    local entry point. The **mechanical test of this is `praxis_incomplete_requirements(prd-team-app)`
    returning empty** — it derives completeness from verified outcomes + staleness, so "done" means
    every requirement actually passed `af-build`'s verify step, not that the agent believes so. The
-   build-completeness gate (`hooks/build_completeness_gate.py`) enforces it: the worker cannot stop
-   while that query is non-empty. **The environment's derived dependencies** (credentials, API keys,
-   services, tooling — from the `techDecisions`) must be provisioned before coding; an unprovisioned
-   dependency is just a **failing check** on its ticket, which the same completeness gate refuses to
-   pass (af-build). And the
+   worker checks that query explicitly before reporting completion. **The environment's derived
+   dependencies** (credentials, API keys, services, tooling — from the `techDecisions`) must be
+   provisioned before coding; an unprovisioned dependency is a **failing check** on its ticket. The
    plan is **not done until it is DEPLOYED and the deployment verified** — a hard gate the same
    build-completeness gate enforces — **unless the owner explicitly opted out** of deployment
    (`deployment.required:false` + a recorded reason). The build itself **fans out** (parallel

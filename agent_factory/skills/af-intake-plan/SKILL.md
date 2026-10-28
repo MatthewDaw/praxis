@@ -50,11 +50,9 @@ is exactly:
             ticket so it re-enters the FIND set and is re-done. Completion is the hard enum
             build_state="finished" — nothing else counts as done.
 
-Praxis is a HARD dependency: if it is unreachable the factory STOPS (the gate blocks) — it never proceeds
-on a guess. The factory has a **SINGLE Stop hook — `build_completeness` — and it gates the BUILD phase
-only.** There is **no separate planning Stop hook**: planning is **human-gated**. The human clears the
-plan once `plan_gate` passes, contradictions are empty, and a validation episode exists (all read live
-from Praxis).
+Praxis supplies planning state. If it is unreachable, report the outage and end the turn
+without claiming that validation passed. Planning and build completeness Stop hooks are retired.
+Check `plan_gate`, contradictions, and the validation episode explicitly before blessing.
 
 **This skill's place in the methodology.** af-intake-plan runs UPSTREAM of the build loop and is the
 **single owner of the Praxis PLAN** — the `prd-<project>` snapshot: it MINTS the tickets the loop later
@@ -182,14 +180,11 @@ defaults there instead of one at a time. **Anti-masking guard:** a forced defaul
 genuine high-regret/irreversible fork (auth model, data-loss semantics, money, PII exposure) — those
 surface to the human even in Autonomous mode.
 
-## Step 0d — Arm the planning marker (so the plan Stop hook enforces this session)
+## Step 0d — Record the planning marker
 
-Before extracting, **stamp the planning marker**: `_ticket_state.stamp_planning(project, owner)`. This
-writes a session-owned, heartbeated marker on the `prd-<project>` snapshot that ARMS the
-`plan_completeness` Stop hook — from here until bless the hook blocks the planning turn from ending until
-the plan mechanically blesses (B5). Re-stamp periodically to heartbeat it (the marker goes stale after
-`DEFAULT_PLANNING_TTL_S`). It is CLEARED at bless (B5). A build session stamps a *run* marker, not this
-one, so the two Stop hooks never cross-fire.
+Before extracting, stamp `_ticket_state.stamp_planning(project, owner)` to record the active
+planning session. Re-stamp periodically before `DEFAULT_PLANNING_TTL_S` and clear it at bless (B5).
+This marker is coordination state; it does not arm a Stop hook.
 
 ## Step 1 — Extract candidates (two passes, then reconcile)
 
@@ -827,10 +822,8 @@ declare it yourself. All are read LIVE from Praxis:
   healthy outcome.
 - The B5 episode exists.
 
-The `plan_completeness` Stop hook (armed in Step 0d) blocks the planning turn until these hold,
-then **auto-blesses with no human**; the human is summoned only on a failing predicate, and an
-unresolvable predicate on an unchanged snapshot escalates after
-`FACTORY_PLAN_GATE_MAX_ATTEMPTS` (default 3) rather than re-blocking forever.
+Check these predicates explicitly before blessing. No Stop hook enforces them or retries
+the planning turn. Report unresolved predicates to the human.
 
 **Stop by information-gain.** When the next question's expected gain is low and the gate is
 reachable, say so and STOP. But beware the inverse: zero contradictions on a thin plan is not

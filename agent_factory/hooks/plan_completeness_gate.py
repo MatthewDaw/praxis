@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """
+RETIRED: no longer registered or enforced as a Stop hook. Direct execution exits
+successfully without contacting Praxis. The following describes the legacy helpers.
+
 plan-completeness gate — the factory's SECOND *Stop* hook (idea 2, the planning-session sibling of
 ``build_completeness_gate.py``).
 
@@ -45,6 +48,11 @@ import hashlib
 import json
 import os
 import sys
+
+# Retired Stop hook: old Claude sessions may still invoke this path.
+# Exit before loading helpers or contacting Praxis. Imported helpers remain for compatibility.
+if __name__ == "__main__":
+    sys.exit(0)
 
 # The helper modules (_praxis, _ticket_state) live next to this file; the plan-gate tool lives in
 # ../tools. A bare hook subprocess may launch with an arbitrary cwd, so make both importable.
@@ -438,16 +446,3 @@ def _shout_crash(exc: BaseException) -> None:
             ts.stamp_gate_disable(proj, "PLAN_GATE_CRASHED", type(exc).__name__)
     except Exception:  # noqa: BLE001 — durable record is best-effort; the stderr shout is the floor
         pass
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except SystemExit:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        # A crash in the gate's OWN logic (after the fail-closed Praxis guard, which BLOCKS on its
-        # own) must not wedge the agent forever — exit cleanly (allow), but LOUDLY. A gate that
-        # disappears without a word is the failure mode this whole guard class exists to prevent.
-        _shout_crash(exc)
-        sys.exit(0)

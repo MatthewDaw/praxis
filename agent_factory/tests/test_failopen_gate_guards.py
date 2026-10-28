@@ -92,34 +92,42 @@ def test_escalation_guard_is_clear_when_plan_is_not_blocked(monkeypatch):
     assert gate._plan_escalation_check("prd-demo") == ""
 
 
-# --------------------------------------------------------------------------- crash is never silent
+# --------------------------------------------------------------------------- retired hook entry points
 
 
-@pytest.mark.parametrize("file_name,banner", [
-    ("build_completeness_gate.py", "[build-completeness gate] GATE CRASHED"),
-    ("plan_completeness_gate.py", "[plan-completeness gate] GATE CRASHED"),
-])
-def test_gate_crash_is_loud_on_stderr(tmp_path, file_name, banner):
-    """A crash in the gate's own logic still exits 0 (never wedge the agent) but must SHOUT — a
-    gate that stops enforcing in silence is the exact failure this sweep exists to remove."""
-    gate_src = _HOOKS / file_name
+@pytest.mark.parametrize("file_name", ["build_completeness_gate.py", "plan_completeness_gate.py"])
+def test_retired_hook_exits_without_loading_praxis_or_reading_stdin(tmp_path, file_name):
+    """An already-running Claude may still invoke the old path during an outage."""
     driver = tmp_path / "driver.py"
     driver.write_text(
-        "import io, os, sys\n"
-        f"sys.path.insert(0, {str(_HOOKS)!r})\n"
-        # Empty stdin -> main() falls through to ``cwd = data.get('cwd') or os.getcwd()``, which is
-        # OUTSIDE every try in the gate. Detonating there is a faithful stand-in for a bug in the
-        # gate's own logic, which is what the top-level handler exists to catch.
-        "sys.stdin = io.StringIO('')\n"
-        "def _boom():\n"
-        "    raise RuntimeError('synthetic gate bug')\n"
-        "os.getcwd = _boom\n"
-        f"src = open({str(gate_src)!r}).read()\n"
-        "ns = {'__name__': '__main__', '__file__': " + repr(str(gate_src)) + "}\n"
-        "exec(compile(src, ns['__file__'], 'exec'), ns)\n",
+        "import builtins, os, runpy, socket, sys\n"
+        "def forbidden(*args, **kwargs):\n"
+        "    raise AssertionError('retired hook performed work')\n"
+        "original_import = builtins.__import__\n"
+        "def guarded_import(name, *args, **kwargs):\n"
+        "    if name in ('_gate_common', '_praxis', '_ticket_state'):\n"
+        "        forbidden()\n"
+        "    return original_import(name, *args, **kwargs)\n"
+        "builtins.__import__ = guarded_import\n"
+        "socket.socket.connect = forbidden\n"
+        "sys.stdin = type('UnreadableInput', (), {'read': forbidden, 'readline': forbidden})()\n"
+        "os.environ['FACTORY_PROJECT'] = 'sports-analysis'\n"
+        "os.environ['PRAXIS_API_BASE_URL'] = 'http://127.0.0.1:1'\n"
+        f"runpy.run_path({str(_HOOKS / file_name)!r}, run_name='__main__')\n",
         encoding="utf-8",
     )
-    proc = subprocess.run([sys.executable, str(driver)], capture_output=True, text=True, timeout=120)
-    assert proc.returncode == 0, "a gate bug must not wedge the agent"
-    assert banner in proc.stderr
-    assert "synthetic gate bug" in proc.stderr
+    proc = subprocess.run([sys.executable, str(driver)], capture_output=True, text=True, timeout=5)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, "", "")
+
+
+def test_completeness_hooks_are_not_registered():
+    import json
+
+    registration = json.loads((_HOOKS / "hooks.json").read_text())
+    commands = [
+        hook.get("command", "")
+        for groups in registration["hooks"].values()
+        for group in groups
+        for hook in group["hooks"]
+    ]
+    assert not any("completeness_gate" in command for command in commands)

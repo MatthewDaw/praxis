@@ -129,16 +129,12 @@ report so a human can ack it — but it must never be silently skipped.
 8. **LOOP** — repeat FIND→FINISH until the scoped incomplete set is empty, `refresh_run` at each ticket
    boundary so the marker never goes stale mid-run.
 9. **REVIEW + CLOSE THE RUN** — at done, convene the ce-* cold-eyes **WORK-review** panel over the whole
-   diff, record the panel-ran episode, then `clear_run(cids, owner)` to end the run and let the gate go
-   inert.
+   diff, record the panel-ran episode, then `clear_run(cids, owner)` to end the run.
 
-**Praxis is a HARD dependency.** If `_praxis` raises `PraxisUnreachable`, STOP — never assume a ticket is
-done, never proceed past a gate, never invent or cache state. The single Stop hook
-**`hooks/build_completeness_gate.py`** enforces this loop: it reads Praxis live, **fails CLOSED**, arms when
-**this session owns a live `in_progress` claim OR a non-stale whole-set run marker** scopes work to it,
-honors `build_state="finished"` (and excludes/ surfaces `build_state="blocked"`), and blocks the turn from
-ending until the **entire scoped set** is finished — not merely the ticket you currently hold. The run
-marker is what closes the between-ticket window; that is why step 0 stamps it and step 9 clears it.
+**Praxis supplies the build state.** If `_praxis` raises `PraxisUnreachable`, report the outage
+and end the turn without claiming unverified work is complete. Planning and build completeness
+Stop hooks are retired. Query the scoped set explicitly before declaring completion; keep the
+run marker current for coordination and clear it when the run finishes.
 
 **There are NO `.factory/*.json` manifests.** "A build run is active" ≡ *this session owns a live,
 unfinished `in_progress` claim*, read from Praxis — never a file flag. Code lives in **git**, not Praxis;
@@ -342,9 +338,8 @@ already be claimed and absent from `ready`. Then, unconditionally:
 
 **§1–§7 below ARE the per-ticket worker contract** — the exact loop each parallel Workflow worker runs (the
 §8 block hands it to them verbatim, one worker per ready ticket). Read them as *what the workers do*, not as
-*what you do sequentially*. You run §1–§7 inline ONLY under the narrow exception above. Either way YOU own
-the run marker and the gate: `build_completeness_gate` armed on YOUR session in §0 and BLOCKS your turn from
-ending until the whole marked set is `finished` — that is the hook that forcibly keeps the build rolling.
+*what you do sequentially*. You run §1–§7 inline ONLY under the narrow exception above. Either way
+YOU own the run marker and must query the marked set before reporting it finished.
 
 **What the workflow does** (deterministic scheduling — each ticket still has exactly ONE decision-making
 worker; never a crew):
@@ -382,10 +377,9 @@ fail loudly — it corrupts writes mid-build and strands the run. Three rules, i
   artifacts; the 29 that stranded the run outlived their agents by hours. Only their BRANCHES need to
   survive integration (`git worktree remove --force <path>` keeps the branch).
 
-**You own the run marker and the gate.** You stamped it in §0, so `build_completeness_gate` arms on YOUR
-session and blocks your turn from ending until the whole marked set is `finished` — even though the workers
-build. **Await the workflow** (`run_in_background:false`); its completion is the whole job. `refresh_run`
-the marker across a long run.
+**You own the run marker.** Await the workflow (`run_in_background:false`); its completion is
+the whole job. `refresh_run` the marker across a long run, and query the whole marked set
+explicitly before reporting completion.
 
 **Integrate, then review.** Worktree workers leave changes in per-ticket worktrees. After the workflow
 returns, **integrate the finished tickets' worktrees onto the run's working tree** (merge each; resolve the
@@ -1011,8 +1005,7 @@ handed, so the EVAL-FIRST / red→green ordering survives fan-out only if it tra
 verbatim**, one ticket per worker, each in its own worktree. Do NOT paraphrase the loop into a bespoke worker
 prompt — copy the contract block. (A worker that builds first and tests after is the exact drift this closes;
 it has happened.)
-*"Are we done?"* is **not** a counter you maintain: the one `build_completeness_gate` answers it live against
-Praxis, blocking until the whole marked set is finished.
+Query Praxis for the whole marked set before reporting completion; local counters are insufficient.
 After the panel (below), `clear_run(cids, owner)` to end the run; any ticket left `blocked` is surfaced to
 the human as needing owner action, never silently dropped.
 
