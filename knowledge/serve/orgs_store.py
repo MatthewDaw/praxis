@@ -150,6 +150,11 @@ class OrgsStore:
         ).fetchall()
         return [{"org_id": r[0], "name": r[1], "role": r[2]} for r in rows]
 
+    def all_orgs(self) -> list[dict]:
+        """Return every org as ``{org_id, name}``, for operator tooling."""
+        rows = self._conn.execute("SELECT org_id, name FROM orgs ORDER BY org_id").fetchall()
+        return [{"org_id": r[0], "name": r[1]} for r in rows]
+
     def members(self, org_id: str) -> list[dict]:
         """Return every member of ``org_id`` as ``{user_id, role}`` (owners first).
 

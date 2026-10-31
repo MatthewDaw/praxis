@@ -12,6 +12,8 @@ stays inside Praxis.
    - Local: `uv run python -m knowledge.serve` (defaults to `http://localhost:8000`).
    - Prod: your deployed CloudFront / App Runner backend URL.
 2. **An org** you can write to (its `org_id`).
+   On the box, with no login, create one with
+   `python -m knowledge.serve.orgs_cli create --org <org_id> --owner <cognito-sub> --mint-key`.
 3. **A scoped API key** for that org:
    ```bash
    python -m knowledge.serve.apikeys mint --org <org_id>
