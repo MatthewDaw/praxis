@@ -32,7 +32,7 @@ def test_generic_browser_and_legacy_parity_are_rejected():
 
 
 def test_build_quality_and_dedicated_acceptance_are_unaffected():
-    for command in [['npm', 'run', 'build'], ['tsc', '--noEmit'], ['npm', 'run', 'test:r021']]:
+    for command in [['npm', 'run', 'build'], ['check-ticket-types.ts', '--base', 'HEAD~1'], ['npm', 'run', 'test:r021']]:
         assert not module.rejection_reason(command)
 
 
