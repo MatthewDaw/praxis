@@ -184,6 +184,9 @@ def test_only_audited_npm_scripts_get_unit_allocation():
     assert validation_kind('npm', ['exec', '--', 'playwright', 'test'], unit_scripts={'test'}) == 'build'
     assert validation_kind('test-harness.ts', ['--','npm','run','test:integration']) == 'api'
     assert validation_kind('check-r001-foundation.ts', []) == 'build'
+    assert validation_kind('check-ticket-types.ts', []) == 'build'
+    assert validation_kind('check-ticket-types.ts', [], unit_commands={'check-ticket-types.ts'}) == 'unit'
+    assert validation_kind('check-ticket-types.ts', [], unit_commands={'check-ticket-types.ts'}, force_large=True) == 'build'
 
 
 def test_subdirectories_of_one_real_checkout_share_a_lock(tmp_path):
