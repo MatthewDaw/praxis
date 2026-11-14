@@ -224,3 +224,53 @@ def test_reservation_headroom_admits_small_checks_without_overadmitting_builds()
     assert not reservation_fits(6*gib,requested_bytes=6*gib,limit_bytes=12*gib)
     assert reservation_fits(5*gib,requested_bytes=6*gib,limit_bytes=12*gib)
     assert not reservation_fits(8*gib+1,requested_bytes=3*gib,limit_bytes=12*gib)
+
+
+def test_project_reclaim_is_bounded_and_has_a_shared_cooldown(tmp_path):
+    sys.path.insert(0, str(SCRIPTS))
+    from af_validation_slots import reclaim_project_memory
+    cg = tmp_path / 'project'; cg.mkdir()
+    state = tmp_path / 'state'
+    (cg / 'memory.stat').write_text('active_file 2147483648\ninactive_file 0\nslab_reclaimable 0\n')
+    target = cg / 'memory.reclaim'; target.touch()
+    assert reclaim_project_memory(cg, state, now=100)
+    assert target.read_text() == str(1024**3)
+    target.write_text('unchanged')
+    assert not reclaim_project_memory(cg, state, now=189)
+    assert target.read_text() == 'unchanged'
+    assert reclaim_project_memory(cg, state, now=190)
+    assert target.read_text() == str(1024**3)
+
+
+def test_reclaim_does_not_queue_behind_another_waiter_or_ignore_missing_accounting(tmp_path):
+    import fcntl
+    sys.path.insert(0, str(SCRIPTS))
+    from af_validation_slots import reclaim_project_memory
+    cg = tmp_path / 'project'; cg.mkdir()
+    state = tmp_path / 'state'; state.mkdir()
+    (cg / 'memory.stat').write_text('active_file 536870912\n')
+    target = cg / 'memory.reclaim'; target.touch()
+    with (state / 'validation-memory-reclaim.lock').open('a+') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        assert not reclaim_project_memory(cg, state, now=100)
+    assert target.read_text() == ''
+    assert reclaim_project_memory(cg, state, now=100)
+    assert target.read_text() == '536870912'
+    (cg / 'memory.stat').write_text('invalid accounting')
+    assert not reclaim_project_memory(cg, state, now=200)
+    (cg / 'memory.stat').write_text('anon 1073741824\nactive_file 1024\n')
+    assert not reclaim_project_memory(cg, state, now=200)
+
+
+def test_failed_reclaim_is_throttled_and_does_not_open_admission(tmp_path):
+    sys.path.insert(0, str(SCRIPTS))
+    from af_validation_slots import reclaim_project_memory, reservation_fits
+    cg = tmp_path / 'project'; cg.mkdir()
+    (cg / 'memory.stat').write_text('active_file 536870912\n')
+    target = cg / 'memory.reclaim'; target.mkdir()  # write fails, as with EAGAIN/EPERM
+    state = tmp_path / 'state'
+    assert not reclaim_project_memory(cg, state, now=100)
+    target.rmdir(); target.touch()
+    assert not reclaim_project_memory(cg, state, now=101)
+    assert target.read_text() == ''
+    assert not reservation_fits(6*1024**3, requested_bytes=6*1024**3, limit_bytes=12*1024**3)

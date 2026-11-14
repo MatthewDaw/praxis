@@ -174,3 +174,45 @@ def reservation_fits(working_bytes, *, requested_bytes, limit_bytes, margin_byte
     if min(working_bytes, requested_bytes, limit_bytes, margin_bytes) < 0:
         raise ValueError('memory accounting must be nonnegative')
     return working_bytes + requested_bytes + margin_bytes <= limit_bytes
+
+
+def reclaim_project_memory(cgroup: str | Path, state_dir: str | Path, *,
+                           now: float | None = None, cooldown_seconds: float = 90,
+                           max_bytes: int = 1024**3) -> bool:
+    """Request bounded cgroup-local reclaim while admission remains closed.
+
+    Completed checks can leave active file cache and reclaimable slab, neither
+    excluded by working_set_bytes. A shared cooldown avoids competing waiters
+    continually reclaiming each other's hot pages. This never admits a command:
+    the caller must recheck its normal reservation and host-memory constraints.
+    """
+    if cooldown_seconds < 0 or max_bytes <= 0:
+        raise ValueError('reclaim limit must be positive and cooldown nonnegative')
+    root = Path(cgroup)
+    try:
+        stats = dict(line.split() for line in (root / 'memory.stat').read_text().splitlines())
+        reclaimable = sum(max(int(stats.get(k, '0')), 0)
+                          for k in ('active_file', 'inactive_file', 'slab_reclaimable'))
+        if reclaimable < 256 * 1024**2 or not (root / 'memory.reclaim').exists():
+            return False
+        state = Path(state_dir)
+        state.mkdir(parents=True, exist_ok=True)
+        with (state / 'validation-memory-reclaim.lock').open('a+') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            current = time.time() if now is None else now
+            lock.seek(0)
+            previous = lock.read().strip()
+            if previous and current - float(previous) < cooldown_seconds:
+                return False
+            # Throttle failed requests too; EAGAIN is an ordinary reclaim limit.
+            lock.seek(0)
+            lock.truncate()
+            lock.write(str(current))
+            lock.flush()
+            (root / 'memory.reclaim').write_text(str(min(max_bytes, reclaimable)))
+            return True
+    except (OSError, ValueError):
+        return False
