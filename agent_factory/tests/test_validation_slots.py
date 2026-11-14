@@ -143,3 +143,17 @@ def test_weighted_three_apis_exclude_a_build_until_two_finish(tmp_path):
         release(apis.pop())
     finally:
         cleanup(*apis, build)
+
+
+def test_headroom_discounts_only_inactive_file_cache(tmp_path):
+    sys.path.insert(0, str(SCRIPTS))
+    from af_validation_slots import working_set_bytes
+    (tmp_path/'memory.current').write_text('6000\n')
+    (tmp_path/'memory.stat').write_text('anon 2000\ninactive_file 2500\nactive_file 800\nslab_reclaimable 700\n')
+    assert working_set_bytes(tmp_path) == 3500
+    (tmp_path/'memory.stat').write_text('inactive_file 9999\n')
+    assert working_set_bytes(tmp_path) == 0
+    (tmp_path/'memory.stat').write_text('invalid accounting')
+    assert working_set_bytes(tmp_path) == 6000
+    (tmp_path/'memory.stat').unlink()
+    assert working_set_bytes(tmp_path) == 6000

@@ -111,3 +111,20 @@ def acquire_weighted(state_dir, *, integration=False, cwd=None):
         for fd in descriptors:
             os.close(fd)
         raise
+
+
+def working_set_bytes(cgroup):
+    """Exclude inactive file cache from admission pressure, retaining hard caps.
+
+    memory.current includes clean cache left by completed builds. Treating all of
+    it as active can strand a queue forever although MemAvailable is abundant.
+    Missing/invalid accounting stays conservative by using the full current value.
+    """
+    root = Path(cgroup)
+    current = int((root / 'memory.current').read_text())
+    try:
+        stats = dict(line.split() for line in (root / 'memory.stat').read_text().splitlines())
+        inactive = max(int(stats.get('inactive_file', '0')), 0)
+    except (OSError, ValueError):
+        inactive = 0
+    return max(current - inactive, 0)
