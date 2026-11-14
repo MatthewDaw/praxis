@@ -1265,7 +1265,15 @@ af_rolling_refill(){   # $1 = open count of the current batch; launches next-bat
   # Drain switch: `touch $AF_STATE_DIR/af-norefill-$PROJECT` stops refilling so the batch reaches a
   # real boundary (no carried workers) — the only safe moment to swap the driver or stop the loop.
   [ -e "$AF_STATE_DIR/af-norefill-$PROJECT" ] && { say "rolling refill SUSPENDED (af-norefill-$PROJECT present) — draining to a clean boundary"; return 0; }
-  inflight=$(( open + $(af_count "$AF_CARRY_IDS") ))
+  # Carried tickets retain their ids for later integration even after their workers finish
+  # or block. Count only those still open against live concurrency, or one early blocked
+  # worker strands its slot until the slowest ticket in the previous round completes.
+  local carry_open=0
+  if [ -n "${AF_CARRY_IDS// /}" ]; then
+    carry_open=$(praxis_q batch_open $AF_CARRY_IDS) || { say "rolling refill deferred: cannot sample carried worker state"; return 0; }
+    case "$carry_open" in ''|*[!0-9]*) say "rolling refill deferred: invalid carried worker count"; return 0;; esac
+  fi
+  inflight=$(( open + carry_open ))
   rcap=$(af_resource_cap); [ "$rcap" -gt "$BATCH_MAX" ] && rcap="$BATCH_MAX"
   [ -n "${MAX:-}" ] && [ "$MAX" -gt 0 ] 2>/dev/null && [ $((MAX - n - $(af_count "$AF_CARRY_IDS"))) -lt "$rcap" ] && rcap=$((MAX - n - $(af_count "$AF_CARRY_IDS")))
   slots=$(( rcap - inflight )); [ "$slots" -gt 0 ] || return 0
