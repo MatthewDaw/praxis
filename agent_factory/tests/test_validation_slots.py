@@ -174,6 +174,7 @@ def test_only_audited_npm_scripts_get_unit_allocation():
     sys.path.insert(0, str(SCRIPTS))
     from af_validation_slots import validation_kind
     assert validation_kind('vitest.mjs', ['run']) == 'unit'
+    assert validation_kind('vitest.mjs', ['run'], force_large=True) == 'build'
     assert validation_kind('tsc.js', ['--noEmit']) == 'unit'
     assert validation_kind('npm', ['run', 'test']) == 'build'
     assert validation_kind('npm', ['run', 'test'], unit_scripts={'test'}) == 'unit'

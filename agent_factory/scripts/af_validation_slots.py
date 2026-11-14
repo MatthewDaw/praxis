@@ -140,12 +140,14 @@ def working_set_bytes(cgroup):
     return max(current - inactive, 0)
 
 
-def validation_kind(command, args, *, unit_scripts=()):
+def validation_kind(command, args, *, unit_scripts=(), force_large=False):
     """Classify direct test tools, plus npm scripts audited by this project.
 
     Unknown scripts retain the conservative build/browser allocation. A script
     named 'test' is not assumed lightweight unless the caller audited its body.
     """
+    if force_large:
+        return 'build'
     name = Path(command).name
     if name.startswith('test-harness') and 'test:integration' in args:
         return 'api'
