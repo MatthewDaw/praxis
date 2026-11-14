@@ -24,3 +24,8 @@ def test_working_or_queued_conversations_are_untouched():
 def test_shell_and_unknown_readiness_are_not_treated_as_idle_workers():
     assert not module.needs_continuation('incomplete', 'bash', 'bypass permissions on')
     assert not module.needs_continuation('incomplete', 'claude', 'Starting...')
+
+
+def test_background_shell_or_monitor_footer_is_still_working():
+    for footer in ['bypass permissions on · 1 shell, 2 monitors', 'bypass permissions on · 1 monitor']:
+        assert not module.needs_continuation('in_progress', 'claude', footer)

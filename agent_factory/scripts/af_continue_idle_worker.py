@@ -14,6 +14,8 @@ def needs_continuation(state: str, command: str, pane: str) -> bool:
     if any(s in lower for s in ['esc to interrupt', 'waiting for background', 'queued message',
                                 'queued follow-up', 'ctrl+x ctrl+s to send now']):
         return False
+    if re.search(r'bypass permissions on[^\n]*\b[1-9]\d* (?:shells?|monitors?)\b', lower):
+        return False
     return ('bypass permissions on' in lower if command == 'claude'
             else 'ask codex to do anything' in lower)
 
