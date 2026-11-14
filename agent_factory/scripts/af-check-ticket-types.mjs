@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -25,6 +26,9 @@ export function main(args = process.argv.slice(2), workspace = process.cwd()) {
   const base = git(['rev-parse', '--verify', `${args[index + 1]}^{commit}`]);
   const head = git(['rev-parse', 'HEAD']);
   const root = git(['rev-parse', '--show-toplevel']);
+  if (!existsSync(path.join(workspace, 'package.json')) && existsSync(path.join(root, 'mvpvu/package.json'))) {
+    workspace = path.join(root, 'mvpvu');
+  }
   const ts = createRequire(path.join(workspace, 'package.json'))('typescript');
   const owned = git(['diff', '--name-only', base, head, '--']).split('\n')
     .filter(file => /\.[cm]?tsx?$/.test(file))

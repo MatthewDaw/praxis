@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { collectOwnedDiagnostics } from '../scripts/af-check-ticket-types.mjs';
+import { collectOwnedDiagnostics, main } from '../scripts/af-check-ticket-types.mjs';
 
 const require = createRequire(import.meta.url);
 const ts = require(process.env.MVPVUE_TYPESCRIPT_MODULE || 'typescript');
@@ -51,4 +52,25 @@ test('compiler option errors still fail', () => {
 test('missing authored roots fail instead of falling back to a whole-program check', () => {
   const program = ts.createProgram([], {});
   assert.throws(() => collectOwnedDiagnostics(ts, program, ['/missing/owned.ts']), /missing from compiler program/);
+});
+
+test('CLI launched from the Git root discovers the application workspace and still rejects authored errors', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'factory-type-workspace-'));
+  const app = path.join(root, 'mvpvu');
+  const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+  try {
+    mkdirSync(path.join(app, 'node_modules'), { recursive: true });
+    symlinkSync(path.dirname(path.dirname(require.resolve(process.env.MVPVUE_TYPESCRIPT_MODULE || 'typescript'))), path.join(app, 'node_modules/typescript'), 'dir');
+    writeFileSync(path.join(root, '.gitignore'), 'node_modules/\n');
+    writeFileSync(path.join(app, 'package.json'), '{"private":true}');
+    writeFileSync(path.join(app, 'tsconfig.json'), '{"compilerOptions":{"strict":true,"noEmit":true,"lib":["es5"]}}');
+    writeFileSync(path.join(app, 'owned.ts'), 'export const value: number = 1;');
+    git(['init', '-q']); git(['config', 'user.name', 'Factory Fixture']);
+    git(['config', 'user.email', 'fixture@example.invalid']);
+    git(['add', '.']); git(['commit', '-qm', 'base']);
+    const base = git(['rev-parse', 'HEAD']);
+    writeFileSync(path.join(app, 'owned.ts'), 'export const value: number = "wrong";');
+    git(['add', '.']); git(['commit', '-qm', 'authored error']);
+    assert.equal(main(['--base', base], root), 1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
