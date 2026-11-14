@@ -39,3 +39,11 @@ def test_build_quality_and_dedicated_acceptance_are_unaffected():
 def test_dedicated_browser_configuration_can_define_selected_journey():
     assert not module.rejection_reason(['playwright', 'test', '--config', 'playwright.personal-forms.config.js'])
     assert module.rejection_reason(['playwright', 'test', '--config', 'playwright.config.js'])
+
+
+def test_type_checks_are_scoped_without_breaking_build_internals():
+    assert module.rejection_reason(['tsc', '--noEmit'])
+    assert module.rejection_reason(['npm', 'run', 'typecheck'])
+    assert not module.rejection_reason(['tsc', '--noEmit'], allow_project_types=True)
+    assert not module.rejection_reason(['tsc', '-p', '/tmp/tsconfig.ticket-R028.json'])
+    assert not module.rejection_reason(['check-ticket-types.ts', '--base', 'HEAD~1'])

@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 
 
-def rejection_reason(args: list[str]) -> str:
+def rejection_reason(args: list[str], *, allow_project_types: bool = False) -> str:
     """Require concrete selectors for generic suite runners.
 
     Project-specific acceptance scripts remain responsible for their own scope.
@@ -13,6 +13,16 @@ def rejection_reason(args: list[str]) -> str:
         return ''
     command = Path(args[0]).name
     words = args[1:]
+    type_check = command.startswith(('tsc', '_tsc')) or (
+        command in {'npm', 'npm-cli.js', 'npx', 'npx-cli.js'} and 'typecheck' in words
+    )
+    if type_check and not allow_project_types:
+        selected_types = any(re.search(r'\.[cm]?tsx?$', x) for x in words)
+        selected_types = selected_types or any(
+            re.search(r'tsconfig[.-](?:ticket|r\d+).*\.json$', Path(x).name, re.I) for x in words
+        )
+        if not selected_types:
+            return 'Use the scoped type helper with the ticket base; whole-project type censuses are disabled for ticket checks.'
     if 'test:parity' in words:
         return 'Legacy host parity is outside this league ticket build.'
     vitest = command.startswith('vitest')
