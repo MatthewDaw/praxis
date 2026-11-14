@@ -4910,6 +4910,19 @@ af_round_prompt(){ local ids_csv="$1" size="$2"; printf '%s' "/af-build $PROJECT
         fi
       fi
     fi
+    # A native worker can stop with a to-do list while its ticket is unfinished.
+    # Resume that same idle conversation instead of waiting out the stall budget.
+    if [ "$BACKEND" = codex ]; then
+      continue_now=$(date +%s)
+      if [ "$((continue_now - ${continue_last:-0}))" -ge 60 ]; then
+        continue_last=$continue_now
+        continue_helper="$(dirname "${BASH_SOURCE[0]}")/af_continue_idle_worker.py"
+        if [ -f "$continue_helper" ]; then
+          "$PY" "$continue_helper" --project "${FACTORY_PROJECT:-$PROJECT}" \
+            --state-dir "$AF_STATE_DIR" --session-prefix "$SESSION" >>"$LOG" 2>&1 || true
+        fi
+      fi
+    fi
     if [ "$now" -gt "$done_seen" ]; then
       say "round #$round progress: $((now - before))/$size finished"
       done_seen=$now
