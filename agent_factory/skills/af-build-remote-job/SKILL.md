@@ -300,7 +300,7 @@ interpreter, and state dir from its path, so nothing here is project-specific.
 
 ```bash
 ssh -n -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
-  "cd /workspace && AF_WATCH=1 setsid nohup /workspace/praxis/agent_factory/scripts/af-ticket-loop.sh \
+  "cd /workspace && AF_WATCH=1 setsid nohup /workspace/praxis/agent_factory/scripts/af-supervise.sh /workspace/praxis/agent_factory/scripts/af-ticket-loop.sh \
      '<project>' '<worktree>' <pg> <redis|none> <max?> \
      > /workspace/af-<project>-loop.log 2>&1 < /dev/null & disown; echo launched"
 ```
@@ -451,7 +451,7 @@ that does not pass `--model`. Change both, or expect them to disagree.
 
 ## Durable recovery (required for unattended runs)
 
-Launch the driver through the shipped `agent_factory/scripts/af-supervise.sh` wrapper, inside the project's existing tmux or systemd host. The wrapper retries nonzero exits with backoff, retains pending verification, exits on successful drain, and respects an explicit operator stop. Never use a blanket process killer or another project's service. Refresh `af-ticket-loop.sh`, `af-recovery.sh`, and `af-supervise.sh` together; a driver-only copy is incomplete.
+Launch the driver through the shipped `agent_factory/scripts/af-supervise.sh` wrapper, inside the project's existing tmux or systemd host. The wrapper retries nonzero exits with backoff, retains pending verification, exits on successful drain, and respects an explicit operator stop. Never use a blanket process killer or another project's service. Refresh the complete shipped scripts directory, including `af-ticket-loop.sh`, `af-recovery.sh`, `af-supervise.sh`, `af-scope-exec.py`, and `af-stop-owned-scopes.py`, together; a driver-only copy is incomplete.
 
 For a systemd-managed job use `Restart=on-failure`, `RestartSec=30s`, and a project-owned resource slice. Enable its user unit for host recovery and verify user-manager/host keepalive for that execution host. Intentional `systemctl stop` must stay stopped; a successful completed build must not be relaunched. The supervisor is the shipped implementation, replacing the earlier instruction to rely on the watch loop alone.
 

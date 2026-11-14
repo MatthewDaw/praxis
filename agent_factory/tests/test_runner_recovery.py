@@ -81,3 +81,9 @@ def test_one_idle_worker_does_not_end_another_workers_live_turn(tmp_path):
     for other, expected in [(active, 1), (ended, 0)]:
         result = shell(base + 'IDLE=' + shlex.quote(ended) + '; OTHER=' + shlex.quote(other) + '\n' + mock + 'af_all_worker_turns_ended', tmp_path, check=False)
         assert result.returncode == expected
+
+
+def test_background_verification_failure_cannot_be_swallowed(tmp_path):
+    result = shell('say(){ :; }; (exit 9) & AF_VERIFY_PID=$!; af_wait_verify; echo UNSAFE_INTEGRATION', tmp_path, check=False)
+    assert result.returncode == 9
+    assert 'UNSAFE_INTEGRATION' not in result.stdout

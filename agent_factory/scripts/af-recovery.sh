@@ -55,3 +55,15 @@ af_all_worker_turns_ended(){
   done
   [ "$found" = 1 ]
 }
+
+af_wait_verify(){
+  [ -n "${AF_VERIFY_PID:-}" ] || return 0
+  local result=0
+  say "waiting for background verification before integrating another round"
+  wait "$AF_VERIFY_PID" || result=$?
+  AF_VERIFY_PID=""
+  [ "$result" -eq 0 ] || {
+    say "background verification failed; pending checkpoint retained for recovery"
+    return "$result"
+  }
+}
