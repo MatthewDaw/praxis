@@ -161,3 +161,14 @@ def validation_kind(command, args, *, unit_scripts=()):
         if script in unit_scripts:
             return 'unit'
     return 'build'
+
+
+def reservation_fits(working_bytes, *, requested_bytes, limit_bytes, margin_bytes=1024**3):
+    """Leave real headroom for this command, in addition to the token budget.
+
+    Smaller checks must not wait at a lower memory threshold than larger builds.
+    The project hard limit and per-command limits remain independently enforced.
+    """
+    if min(working_bytes, requested_bytes, limit_bytes, margin_bytes) < 0:
+        raise ValueError('memory accounting must be nonnegative')
+    return working_bytes + requested_bytes + margin_bytes <= limit_bytes

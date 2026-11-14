@@ -213,3 +213,13 @@ def test_linked_worktrees_keep_independent_checkout_locks(tmp_path):
         assert ready(a) and ready(b)
         release(a);release(b)
     finally:cleanup(a,b)
+
+
+def test_reservation_headroom_admits_small_checks_without_overadmitting_builds():
+    sys.path.insert(0, str(SCRIPTS))
+    from af_validation_slots import reservation_fits
+    gib=1024**3
+    assert reservation_fits(6*gib,requested_bytes=3*gib,limit_bytes=12*gib)
+    assert not reservation_fits(6*gib,requested_bytes=6*gib,limit_bytes=12*gib)
+    assert reservation_fits(5*gib,requested_bytes=6*gib,limit_bytes=12*gib)
+    assert not reservation_fits(8*gib+1,requested_bytes=3*gib,limit_bytes=12*gib)
