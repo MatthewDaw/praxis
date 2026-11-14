@@ -47,3 +47,11 @@ def test_type_checks_are_scoped_without_breaking_build_internals():
     assert not module.rejection_reason(['tsc', '--noEmit'], allow_project_types=True)
     assert not module.rejection_reason(['tsc', '-p', '/tmp/tsconfig.ticket-R028.json'])
     assert not module.rejection_reason(['check-ticket-types.ts', '--base', 'HEAD~1'])
+
+
+def test_legacy_architecture_and_grade_paths_cannot_expand_scope():
+    assert module.rejection_reason(['check-architecture.ts'])
+    assert module.rejection_reason(['npm', 'run', 'check:architecture'])
+    assert module.rejection_reason(['grade-authored-diff.ts', 'typed-and-linted'], ticket_base='HEAD~1')
+    assert module.rejection_reason(['grade-authored-diff.ts', 'minimalism-dry'])
+    assert not module.rejection_reason(['grade-authored-diff.ts', 'minimalism-dry'], ticket_base='HEAD~1')

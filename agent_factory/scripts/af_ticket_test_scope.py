@@ -3,7 +3,8 @@ from pathlib import Path
 import re
 
 
-def rejection_reason(args: list[str], *, allow_project_types: bool = False) -> str:
+def rejection_reason(args: list[str], *, allow_project_types: bool = False,
+                     ticket_base: str = '') -> str:
     """Require concrete selectors for generic suite runners.
 
     Project-specific acceptance scripts remain responsible for their own scope.
@@ -13,6 +14,13 @@ def rejection_reason(args: list[str], *, allow_project_types: bool = False) -> s
         return ''
     command = Path(args[0]).name
     words = args[1:]
+    if command == 'check-architecture.ts' or 'check:architecture' in words:
+        return 'The whole-repository architecture census is outside ticket scope; review authored paths and run scoped type/lint checks.'
+    if command == 'grade-authored-diff.ts':
+        if 'typed-and-linted' in words:
+            return 'This legacy grading mode invokes whole-package type checks; use the scoped type helper and authored-file lint instead.'
+        if not ticket_base:
+            return 'Set TICKET_BASE explicitly before grading an authored diff; the legacy default includes unrelated changes.'
     type_check = command.startswith(('tsc', '_tsc')) or (
         command in {'npm', 'npm-cli.js', 'npx', 'npx-cli.js'} and 'typecheck' in words
     )
