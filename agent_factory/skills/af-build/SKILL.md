@@ -839,18 +839,11 @@ actually observable (discover the commands; don't assume):
   *amend* exists to add a NEW general lens when one is discovered — a compounding improvement — never as a
   prerequisite for building an existing ticket.)
 
-**Test-run budget — targeted every cycle, the whole-repo suite ONCE per ticket, at the END.** Verification of
-a ticket has two phases and you never mix them:
+**Test-run budget — affected checks per ticket; full suites at integration/release gates.**
 
-| Phase | What you run | How often |
-|---|---|---|
-| **Iterate** (§4c–d, and every correction-loop pass) | ONLY the targeted evals — the specific test file(s)/pattern covering your slice, plus typecheck/lint scoped to the touched paths | every cycle, freely |
-| **Final gate** (immediately before FINISH, §6) | the whole-repo pinned gates — full suite, repo build, repo-wide typecheck/lint | **ONCE**, after every targeted eval is already green |
+During edits run the affected acceptance cases and changed-module tests. Before FINISH run every required pinned check against its declared input boundary, including relevant callers, authorization, persistence and isolation. Select explicit files/cases; repository-wide suite/type/lint sweeps are not default ticket gates. A genuinely required production build remains a build and must not be replaced with a narrower passing check. Correct an overbroad inherited contract explicitly before replacing its pin; retain its identity, coverage requirements and truthful evidence.
 
-So: sequence your pinned validations. Run the narrow ones first and drive them green with targeted commands;
-run the wildcard whole-repo ones **last, together, in a single pass**, and only when you believe the ticket
-is done. `record_validation_pass` for each as usual — the budget changes *when* a gate runs, never *whether*
-it runs, and every pinned validation still has to pass before FINISH.
+Run required final checks once after targeted feedback is green. After a change rerun the checks whose source, test, dependency, configuration or fixture inputs changed; preserve compatible completed evidence with input/revision comparisons. Full suites belong to shared integration/release gates for the integrated revision. Never label scoped evidence as a whole-suite pass.
 
 **Never use the whole-repo suite as your iteration signal, and never re-run it to "compare against a
 baseline."** Why the rule exists: a ~1835-test suite costs ~2 minutes per pass, and one observed ticket paid
@@ -1222,14 +1215,11 @@ splits that write into working memory and the ticket never reads back as done �
    diff. An aligned-base or default-branch file absent from that diff is not this ticket's responsibility.
    heartbeat(TICKET, OWNER, ref=PLAN) across long stretches so the lease stays live. While iterating, re-run
    ONLY the targeted evals — never the whole-repo suite; that is the per-edit feedback loop.
-6. CONFIRM GREEN + RECORD  — with every targeted eval green, run the whole-repo evals + the project's real
-   external gates (typecheck / build / lint / full suite) ONE time, as the final gate.
+6. CONFIRM GREEN + RECORD — run every required pinned acceptance and risk-specific check once on
+   its declared final inputs, selecting affected files/cases. Required production builds remain mandatory.
    record_validation_pass(TICKET, vid, passed=(exit_code==0), ran_at=now, ref=PLAN) per eval.
-   On a failure, RE-ENTER step 5 with the captured failing signal as context — never revise from self-doubt
-   alone, never weaken an eval to pass — then re-take the whole-repo pass only once you believe it is green
-   again. Budget: at most ONE whole-repo pass per fix cycle, never one per attempt and never as an iteration
-   signal (a ~1835-test suite costs ~2 minutes a pass; one ticket that ran it three times blew past 20
-   minutes without finishing).
+   On failure, return to step 5 with the captured signal and rerun affected checks after repair.
+   Do not append a whole-repository test/type/lint census by default; full suites run at integration gates.
 6b. ATTRIBUTE EVERY FAILURE BEFORE ACTING. Reproduce the specific failure at TICKET_BASE. If it already
    fails there, record it as inherited debt and do not fix or block this ticket for it. If it is new, confirm
    the implicated path is in TICKET_BASE..HEAD; then fix it under the normal bounded correction loop. NEVER
@@ -1277,7 +1267,7 @@ splits that write into working memory and the ticket never reads back as done �
 NEVER build-first / test-after. NEVER fake, delete, or weaken an eval to get green. NEVER finish without
 all_validations_passed. NEVER release "finished" leaving uncommitted changes. NEVER ask af-intake-plan to
 author the eval requirements. NEVER run the whole-repo suite as your iteration signal or to establish a
-failure's provenance — targeted every cycle, whole-repo once at the end. NEVER leave a failing test unfixed
+failure's provenance — targeted checks per ticket, full suites at integration gates. NEVER leave a failing test unfixed
 because your ticket did not cause it; fix it, or block() it with the signal named.
 ```
 
@@ -1332,8 +1322,8 @@ any other — external signal, recorded on the ticket, fail-closed.
   `record_validation_pass`.
 - **Never** skip verification — the build ALWAYS runs every pinned validation; verification is intrinsic.
 - **Never** use the whole-repo suite as the iteration signal, and never re-run it to work out whether a
-  failure is pre-existing — targeted tests every cycle, the whole-repo gates ONCE per ticket at the end, and
-  re-taken only after an actual fix. Repeated multi-minute suite passes and baseline-comparison triage are
+  failure is pre-existing — targeted tests per ticket, full suites at integration gates, with affected checks
+  re-taken only after their inputs change. Repeated multi-minute suite passes and baseline-comparison triage are
   the largest measured time sink in a ticket (§5 *Test-run budget*).
 - **Never** leave a failure a gate surfaced unfixed because your slice did not cause it — fix everything the
   gates report, and if it is genuinely unfixable from this ticket, `block(cid, owner, reason)` it with the
@@ -1397,3 +1387,5 @@ Store completed validation reports, logs and screenshots under `$AF_STATE_DIR/wo
 Before launching a baseline reproduction, inspect completed evidence from sibling workers at the same exact baseline SHA. Prefer the shared `$AF_STATE_DIR/baseline-evidence/<baseline-sha>/` directory when present; retain original command/fixture metadata and source-artifact checksums, and publish new completed witnesses there as separate per-ticket files so concurrent workers do not overwrite each other. Reuse an actually executed case only when its full test identity, cause, fixture/toolchain, and relevant setup/order match; a broader report can witness a narrower case, but skipped, pending, aborted, or merely name-matching cases cannot. Keep the original command metadata and copy or durably reference the source reports in the ticket evidence. Reproduce only uncovered or incompatible cases. Each ticket still needs complete coverage of its own current candidate failures; another worker's passing verdict is not a substitute for that comparison.
 
 The fast integration lane preserves required pinned acceptance and risk-specific checks. Full integration/build/release suites run at phase gates. An unknown phase-gate classification conservatively selects full validation. Neither an incomplete fast run nor a matching baseline first failure proves a whole-suite pass. Record commands, durations, revisions, fixtures and remaining failures so the next worker resumes evidence rather than recreating it.
+
+For authored TypeScript checks, reuse `TICKET_BASE=<recorded-base> node "$AF_PLUGIN_DIR/scripts/af-check-ticket-types.mjs"` when the project uses TypeScript and the checker supports its configuration. It derives committed authored roots from Git, resolves imported types and retains compiler/global diagnostics. Run ESLint separately on the same authored paths with their existing package configurations. Do not recreate a helper calling `getPreEmitDiagnostics(program)` and filtering afterward: that still evaluates unrelated legacy dependencies. The shared checker requests diagnostics for each authored source file. Preserve any additional declaration, build or risk-specific check the ticket requires, and never rerun an already completed compatible check merely to switch engines.
