@@ -79,3 +79,31 @@ def test_worker_that_resumes_after_initial_idle_observation_is_not_closed(tmp_pa
         return run(args, **kwargs)
     assert module.retire_finished([fact], 'example', tmp_path/'state', proc=proc, run=changed, now=NOW) == []
     assert not any(c[1] == 'send-keys' for c in calls)
+
+
+def test_quiet_blocked_context_is_preserved_without_changing_ticket_state(tmp_path):
+    import os
+    proc, fact, calls, run = fixture(tmp_path)
+    fact['meta'].update(build_state='blocked', block_reason='Missing dependency interface')
+    fact['meta'].pop('finished_at')
+    rollout=(proc/'12/fd/3').readlink()
+    os.utime(rollout,(NOW.timestamp()-60,NOW.timestamp()-60))
+    assert module.retire_finished([fact], 'example', tmp_path/'state', proc=proc, run=run, now=NOW)==['R007']
+    record=json.loads((tmp_path/'state/retired-workers/R007.json').read_text())
+    assert record['terminal_state']=='blocked'
+    assert record['codex_session_id']=='resumable-session-id'
+    assert fact['meta']['build_state']=='blocked'
+
+
+def test_blocked_ticket_with_recent_activity_or_missing_reason_stays_alive(tmp_path):
+    import os
+    proc, fact, calls, run = fixture(tmp_path)
+    fact['meta'].update(build_state='blocked', block_reason='Missing dependency interface')
+    fact['meta'].pop('finished_at')
+    rollout=(proc/'12/fd/3').readlink()
+    os.utime(rollout,(NOW.timestamp()-1,NOW.timestamp()-1))
+    assert module.retire_finished([fact], 'example', tmp_path/'state', proc=proc, run=run, now=NOW)==[]
+    fact['meta'].pop('block_reason')
+    os.utime(rollout,(NOW.timestamp()-60,NOW.timestamp()-60))
+    assert module.retire_finished([fact], 'example', tmp_path/'state', proc=proc, run=run, now=NOW)==[]
+    assert not any(c[1]=='send-keys' for c in calls)

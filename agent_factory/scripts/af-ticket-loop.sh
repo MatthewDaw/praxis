@@ -1140,13 +1140,22 @@ af_prompt_is_argv(){ [ "$BACKEND" = grok ] || [ "$BACKEND" = codex ]; }
 # and deepseek the CLI still starts empty and the caller send-keys the prompt after
 # pane_is_ready.
 af_launch_agent(){   # $1=tmux session  $2=optional initial prompt (grok/codex only)
-  local sess="$1" prompt="${2:-}" pf
+  local sess="$1" prompt="${2:-}" pf resume_id launch="$CLAUDE_LAUNCH"
+  if [ "$BACKEND" = codex ] && [[ "$sess" == "$SESSION"-* ]]; then
+    resume_id=$("$PY" "$(dirname "${BASH_SOURCE[0]}")/af_resume_context.py" \
+      --state-dir "$AF_STATE_DIR" --project "${FACTORY_PROJECT:-$PROJECT}" \
+      --ticket "${sess#"$SESSION"-}" 2>/dev/null) || resume_id=""
+    if [[ "$resume_id" =~ ^[0-9a-f-]{36}$ ]]; then
+      launch="$launch resume $resume_id"
+      say "resuming archived conversation for ${sess#"$SESSION"-}"
+    fi
+  fi
   tmux kill-session -t "$sess" 2>/dev/null || true
   tmux new-session -d -s "$sess" -c "$WT"
   if af_prompt_is_argv && [ -n "$prompt" ]; then
     pf="${AF_STATE_DIR}/af-${sess}.prompt"
     printf '%s' "$prompt" > "$pf"
-    tmux send-keys -t "$sess" "cd $WT && set -a && . '${AF_STATE_DIR}/af-agent-${PROJECT}.env' && set +a && $CLAUDE_LAUNCH -- \"\$(cat '$pf')\"" Enter
+    tmux send-keys -t "$sess" "cd $WT && set -a && . '${AF_STATE_DIR}/af-agent-${PROJECT}.env' && set +a && $launch -- \"\$(cat '$pf')\"" Enter
   else
     tmux send-keys -t "$sess" "cd $WT && set -a && . '${AF_STATE_DIR}/af-agent-${PROJECT}.env' && set +a && $CLAUDE_LAUNCH" Enter
   fi
@@ -4897,7 +4906,7 @@ af_round_prompt(){ local ids_csv="$1" size="$2"; printf '%s' "/af-build $PROJECT
         retire_helper="$(dirname "${BASH_SOURCE[0]}")/af_retire_finished.py"
         if [ -f "$retire_helper" ]; then
           "$PY" "$retire_helper" --project "${FACTORY_PROJECT:-$PROJECT}" \
-            --state-dir "$AF_STATE_DIR" >>"$LOG" 2>&1 || true
+            --state-dir "$AF_STATE_DIR" --session-prefix "$SESSION" >>"$LOG" 2>&1 || true
         fi
       fi
     fi
