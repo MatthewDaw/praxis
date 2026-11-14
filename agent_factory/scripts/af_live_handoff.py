@@ -43,11 +43,17 @@ def read_valid(path):
     ids, sessions = data.get('ids'), data.get('sessions')
     if not isinstance(ids, list) or not ids or not isinstance(sessions, list) or len(ids) != len(sessions):
         return None
-    if any(not isinstance(v, str) or not re.fullmatch(r'[A-Za-z0-9_.-]+', v) for v in ids + sessions):
+    next_ids, next_sessions = data.get('next_ids', []), data.get('next_sessions', [])
+    if not isinstance(next_ids, list) or not isinstance(next_sessions, list) or len(next_ids) != len(next_sessions):
+        return None
+    if any(not isinstance(v, str) or not re.fullmatch(r'[A-Za-z0-9_.-]+', v)
+           for v in ids + sessions + next_ids + next_sessions):
+        return None
+    if len(set(ids + next_ids)) != len(ids + next_ids) or len(set(sessions + next_sessions)) != len(sessions + next_sessions):
         return None
     if subprocess.run(['systemctl', '--user', 'is-active', '--quiet', data['owner_unit']], capture_output=True).returncode:
         return None
-    if any(subprocess.run(['tmux', 'has-session', '-t', session], capture_output=True).returncode for session in sessions):
+    if any(subprocess.run(['tmux', 'has-session', '-t', session], capture_output=True).returncode for session in sessions + next_sessions):
         return None
     return data
 
@@ -72,7 +78,9 @@ def consume(path=None):
         return ''
     path.unlink()
     values = {'AF_CARRY_IDS': ' '.join(data['ids']),
-              'AF_CARRY_SESSIONS': ' '.join(data['sessions']), 'AF_ROLLING': '1'}
+              'AF_CARRY_SESSIONS': ' '.join(data['sessions']), 'AF_ROLLING': '1',
+              'AF_HANDOFF_NEXT_IDS': ' '.join(data.get('next_ids', [])),
+              'AF_HANDOFF_NEXT_SESSIONS': ' '.join(data.get('next_sessions', []))}
     return '\n'.join(f'export {key}={shlex.quote(value)}' for key, value in values.items())
 
 

@@ -2171,7 +2171,7 @@ import _praxis
 p=sys.argv[1]; kw=dict(space=p, snapshot=f'prd-{p}')
 NOTE=('lease released by af-ticket-loop: prior session ended (context cap or crash), '
       'returning to incomplete for a fresh session.')
-carry=set(os.environ.get('AF_CARRY_IDS','').split())
+carry=set(os.environ.get('AF_CARRY_IDS','').split()) | set(os.environ.get('AF_HANDOFF_NEXT_IDS','').split())
 stranded={}
 for f in _praxis.facts_by(category='requirement', **kw):
     m=f.get('meta') or {}
@@ -2434,7 +2434,15 @@ salvage_external_grok_clones(){   # $1 = this round's ticket ids (comma or space
 queue_orphan_branches(){
   cd "$WT" || return 0
   unset AF_WT_BRANCH_CACHE   # each pass re-reads the worktree set the ownership rule is derived from
-  local br ids queued=0 already
+  local br ids queued=0 already fin known i ok
+  # Orphan recovery must not bypass integrate_round's completion gate. In a
+  # rolling run, unmerged branches also belong to live carried workers.
+  if ! fin=$(praxis_q finished_ids) || ! known=$(praxis_q known_ids); then
+    say "orphan recovery deferred — ticket provenance unavailable; branches retained"
+    return 0
+  fi
+  fin=" $fin "
+  known=" $known "
   while read -r br; do
     [ -n "$br" ] || continue
     af_is_owed_merge "$br" || continue
@@ -2443,9 +2451,21 @@ queue_orphan_branches(){
     # from. Queueing one sends the conflict resolver to land unrelated commits that reached main
     # while the build ran, dressed as ticket recovery.
     af_branch_has_own_work "$br" || continue
+    ids=$(af_owned_ids "HEAD..$br" "$known" "$(af_base_ref || true)")
+    if [ -z "$ids" ]; then
+      say "orphan branch retained as unproven: $br — no owned ticket provenance"
+      continue
+    fi
+    ok=1
+    for i in $ids; do
+      case "$fin" in *" $i "*) ;; *) ok=0 ;; esac
+    done
+    if [ "$ok" != 1 ]; then
+      say "orphan branch retained: $br — ticket(s) not all finished: $ids"
+      continue
+    fi
     already=$(cut -f1 "$CONFLICTS" 2>/dev/null | grep -xF "$br" || true)
     [ -n "$already" ] && continue                                          # this round already queued it
-    ids=$(af_branch_ids "HEAD..$br")
     printf '%s\t%s\n' "$br" "$ids" >> "$CONFLICTS"
     queued=$((queued+1))
     say "orphan branch from an earlier round queued for landing: $br (ticket(s):$ids )"
@@ -4743,7 +4763,11 @@ af_round_prompt(){ local ids_csv="$1" size="$2"; printf '%s' "/af-build $PROJECT
       af_launch_agent "$wsess" "$(af_worker_prompt "$wid")"
       AF_WORKER_SESSIONS="$AF_WORKER_SESSIONS $wsess"
     done
-    _carried="$AF_CARRY_IDS"; AF_CARRY_IDS=""; AF_CARRY_SESSIONS=""   # carried workers are now this batch's own
+    _carried="$AF_CARRY_IDS"
+    # A live handoff retains the original integration boundary: later workers
+    # remain next-batch carries instead of delaying this batch's completed work.
+    AF_CARRY_IDS="${AF_HANDOFF_NEXT_IDS:-}"; AF_CARRY_SESSIONS="${AF_HANDOFF_NEXT_SESSIONS:-}"
+    unset AF_HANDOFF_NEXT_IDS AF_HANDOFF_NEXT_SESSIONS
     for wid in $@; do
       wsess="${SESSION}-${wid}"
       # A carried session is mid-build, so its pane will never show the fresh-REPL ready marker;

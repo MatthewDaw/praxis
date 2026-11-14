@@ -102,3 +102,32 @@ def test_driver_applies_handoff_after_project_settings_exports():
     driver = (SCRIPT.parent/'af-ticket-loop.sh').read_text()
     settings = driver.index("d = json.load(open('$WT/.claude/settings.local.json'))['env']")
     assert driver.index('af_live_handoff.py" consume') > settings
+
+
+def test_handoff_keeps_current_and_next_batch_separate(state):
+    data = json.loads(state.read_text())
+    data.update(next_ids=['R010'], next_sessions=['af-example-R010'])
+    state.write_text(json.dumps(data))
+    assert handoff.skip_cleanup_once(state)
+    exports = handoff.consume(state)
+    assert "export AF_CARRY_IDS='R001 R003'" in exports
+    assert 'export AF_HANDOFF_NEXT_IDS=R010' in exports
+    assert 'export AF_HANDOFF_NEXT_SESSIONS=af-example-R010' in exports
+    assert not state.exists()
+
+
+@pytest.mark.parametrize('mutation', [
+    {'next_ids':['R010'], 'next_sessions':[]},
+    {'next_ids':['R001'], 'next_sessions':['af-example-R010']},
+    {'next_ids':['R010'], 'next_sessions':['af-example-R001']},
+    {'next_ids':['R010; exit'], 'next_sessions':['af-example-R010']},
+])
+def test_invalid_next_batch_never_suppresses_cleanup(state, mutation):
+    data=json.loads(state.read_text());data.update(mutation);state.write_text(json.dumps(data))
+    assert not handoff.skip_cleanup_once(state)
+
+
+def test_next_batch_lease_is_preserved_and_restored_after_current_adoption():
+    driver=(SCRIPT.parent/'af-ticket-loop.sh').read_text()
+    assert "carry=set(os.environ.get('AF_CARRY_IDS','').split()) | set(os.environ.get('AF_HANDOFF_NEXT_IDS','').split())" in driver
+    assert 'AF_CARRY_IDS="${AF_HANDOFF_NEXT_IDS:-}"; AF_CARRY_SESSIONS="${AF_HANDOFF_NEXT_SESSIONS:-}"' in driver
