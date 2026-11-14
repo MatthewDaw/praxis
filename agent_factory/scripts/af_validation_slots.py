@@ -10,6 +10,13 @@ from pathlib import Path
 import time
 
 
+def worktree_lock_paths(cwd):
+    """One checkout lock across subdirectories, retaining the older cwd lock."""
+    current = Path(cwd).resolve()
+    root = next((p for p in (current, *current.parents) if (p / '.git').exists()), current)
+    return [root] if root == current else [root, current]
+
+
 def acquire(state_dir, *, integration=False, cwd=None, slots=2):
     if slots not in (1, 2, 3):
         raise ValueError('isolated integration concurrency must be one, two, or three')
@@ -23,8 +30,9 @@ def acquire(state_dir, *, integration=False, cwd=None, slots=2):
     try:
         # A single worktree must not concurrently regenerate/build the same files.
         if cwd is not None:
-            name = hashlib.sha256(os.fsencode(Path(cwd).resolve())).hexdigest()
-            fcntl.flock(open_lock('worktree-' + name + '.lock'), fcntl.LOCK_EX)
+            for path in worktree_lock_paths(cwd):
+                name = hashlib.sha256(os.fsencode(path)).hexdigest()
+                fcntl.flock(open_lock('worktree-' + name + '.lock'), fcntl.LOCK_EX)
         # Hold a turnstile only during admission. Once an exclusive build queues,
         # later API checks cannot continually acquire shared access ahead of it.
         turnstile = open_lock('validation-admission.lock')
@@ -76,8 +84,9 @@ def acquire_weighted(state_dir, *, integration=False, lightweight=False, cwd=Non
         return fd
     try:
         if cwd is not None:
-            name = hashlib.sha256(os.fsencode(Path(cwd).resolve())).hexdigest()
-            fcntl.flock(lock_file('worktree-' + name + '.lock'), fcntl.LOCK_EX)
+            for path in worktree_lock_paths(cwd):
+                name = hashlib.sha256(os.fsencode(path)).hexdigest()
+                fcntl.flock(lock_file('worktree-' + name + '.lock'), fcntl.LOCK_EX)
         if not small:
             fcntl.flock(lock_file('browser-build.lock'), fcntl.LOCK_EX)
         admission = lock_file('weighted-admission.lock')

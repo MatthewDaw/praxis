@@ -183,3 +183,33 @@ def test_only_audited_npm_scripts_get_unit_allocation():
     assert validation_kind('npm', ['exec', '--', 'playwright', 'test'], unit_scripts={'test'}) == 'build'
     assert validation_kind('test-harness.ts', ['--','npm','run','test:integration']) == 'api'
     assert validation_kind('check-r001-foundation.ts', []) == 'build'
+
+
+def test_subdirectories_of_one_real_checkout_share_a_lock(tmp_path):
+    repo=tmp_path/'repo';repo.mkdir()
+    subprocess.run(['git','init',str(repo)],check=True,capture_output=True)
+    web=repo/'apps/web';api=repo/'apps/api';web.mkdir(parents=True);api.mkdir()
+    state=tmp_path/'state'
+    a=start(state,integration=True,cwd=web,weighted=True)
+    assert ready(a)
+    b=start(state,integration=True,cwd=api,weighted=True)
+    try:
+        assert not ready(b,.15)
+        release(a)
+        assert ready(b)
+        release(b)
+    finally:cleanup(a,b)
+
+
+def test_linked_worktrees_keep_independent_checkout_locks(tmp_path):
+    repo=tmp_path/'repo';repo.mkdir()
+    subprocess.run(['git','init',str(repo)],check=True,capture_output=True)
+    subprocess.run(['git','-C',str(repo),'-c','user.name=Test','-c','user.email=test@example.test','-c','commit.gpgsign=false','commit','--allow-empty','-m','initial'],check=True,capture_output=True)
+    other=tmp_path/'other'
+    subprocess.run(['git','-C',str(repo),'worktree','add','--detach',str(other),'HEAD'],check=True,capture_output=True)
+    a=start(tmp_path/'state',integration=True,cwd=repo,weighted=True)
+    b=start(tmp_path/'state',integration=True,cwd=other,weighted=True)
+    try:
+        assert ready(a) and ready(b)
+        release(a);release(b)
+    finally:cleanup(a,b)
