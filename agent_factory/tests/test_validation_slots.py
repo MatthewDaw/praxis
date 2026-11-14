@@ -6,9 +6,9 @@ import sys
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 
 
-def start(state, *, integration, cwd=None):
-    code = 'import sys; sys.path.insert(0,sys.argv[1]); from af_validation_slots import acquire; fds=acquire(sys.argv[2],integration=sys.argv[3]=="1",cwd=sys.argv[4] or None); print("admitted",flush=True); sys.stdin.read(1)'
-    return subprocess.Popen([sys.executable, '-c', code, str(SCRIPTS), str(state), '1' if integration else '0', str(cwd or '')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+def start(state, *, integration, cwd=None, slots=2):
+    code = 'import sys; sys.path.insert(0,sys.argv[1]); from af_validation_slots import acquire; fds=acquire(sys.argv[2],integration=sys.argv[3]=="1",cwd=sys.argv[4] or None,slots=int(sys.argv[5])); print("admitted",flush=True); sys.stdin.read(1)'
+    return subprocess.Popen([sys.executable, '-c', code, str(SCRIPTS), str(state), '1' if integration else '0', str(cwd or ''), str(slots)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
 def ready(proc, timeout=2):
@@ -67,3 +67,25 @@ def test_same_worktree_serializes_even_with_two_available_slots(tmp_path):
         release(b)
     finally:
         cleanup(a, b)
+
+
+def test_three_slot_profile_bounds_fourth_and_preserves_exclusive_gate(tmp_path):
+    active = [start(tmp_path, integration=True, slots=3) for _ in range(3)]
+    fourth = None
+    exclusive = None
+    try:
+        assert all(ready(proc) for proc in active)
+        fourth = start(tmp_path, integration=True, slots=3)
+        assert not ready(fourth, .15)
+        release(active.pop())
+        assert ready(fourth)
+        exclusive = start(tmp_path, integration=False)
+        assert not ready(exclusive, .15)
+        for proc in active:
+            release(proc)
+        assert not ready(exclusive, .15)
+        release(fourth)
+        assert ready(exclusive)
+        release(exclusive)
+    finally:
+        cleanup(*active, *[p for p in (fourth, exclusive) if p is not None])

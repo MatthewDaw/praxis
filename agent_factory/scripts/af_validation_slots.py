@@ -1,4 +1,4 @@
-"""Admission for two isolated API checks, or one exclusive browser/build check.
+"""Admission for bounded isolated API checks, or one exclusive browser/build check.
 
 The original global lock remains the gate, so older exclusive callers stay safe.
 Returned descriptors must survive exec and remain open for the command's lifetime.
@@ -11,8 +11,8 @@ import time
 
 
 def acquire(state_dir, *, integration=False, cwd=None, slots=2):
-    if slots not in (1, 2):
-        raise ValueError('isolated integration concurrency must be one or two')
+    if slots not in (1, 2, 3):
+        raise ValueError('isolated integration concurrency must be one, two, or three')
     state = Path(state_dir)
     state.mkdir(parents=True, exist_ok=True)
     descriptors = []
