@@ -59,13 +59,14 @@ def acquire(state_dir, *, integration=False, cwd=None, slots=2):
         raise
 
 
-def acquire_weighted(state_dir, *, integration=False, cwd=None):
-    """Three 3-GiB reservations: an API uses one; a build/browser uses two.
+def acquire_weighted(state_dir, *, integration=False, lightweight=False, cwd=None):
+    """Three 3-GiB reservations: API/unit checks use one; a build/browser uses two.
 
     Enable only after legacy exclusive callers have drained or been requeued,
     reserving a token for each legacy API still running. All heavy callers retain
     the shared legacy gate, so an old exclusive caller still waits safely.
     """
+    small = integration or lightweight
     state = Path(state_dir)
     state.mkdir(parents=True, exist_ok=True)
     descriptors = []
@@ -77,13 +78,13 @@ def acquire_weighted(state_dir, *, integration=False, cwd=None):
         if cwd is not None:
             name = hashlib.sha256(os.fsencode(Path(cwd).resolve())).hexdigest()
             fcntl.flock(lock_file('worktree-' + name + '.lock'), fcntl.LOCK_EX)
-        if not integration:
+        if not small:
             fcntl.flock(lock_file('browser-build.lock'), fcntl.LOCK_EX)
         admission = lock_file('weighted-admission.lock')
         fcntl.flock(admission, fcntl.LOCK_EX)
         fcntl.flock(lock_file('heavy-validation.lock'), fcntl.LOCK_SH)
         tokens = [lock_file(f'validation-budget-{i}.lock') for i in range(3)]
-        required = 1 if integration else 2
+        required = 1 if small else 2
         selected = []
         while len(selected) < required:
             for fd in tokens:
@@ -128,3 +129,26 @@ def working_set_bytes(cgroup):
     except (OSError, ValueError):
         inactive = 0
     return max(current - inactive, 0)
+
+
+def validation_kind(command, args, *, unit_scripts=()):
+    """Classify direct test tools, plus npm scripts audited by this project.
+
+    Unknown scripts retain the conservative build/browser allocation. A script
+    named 'test' is not assumed lightweight unless the caller audited its body.
+    """
+    name = Path(command).name
+    if name.startswith('test-harness') and 'test:integration' in args:
+        return 'api'
+    if name.startswith(('vitest', 'tsc', '_tsc', 'eslint', 'prettier')):
+        return 'unit'
+    if name in {'npm', 'npm-cli.js', 'npx', 'npx-cli.js'}:
+        script = None
+        if 'run' in args:
+            i = args.index('run')
+            script = args[i+1] if len(args) > i+1 else None
+        elif args and args[0] in {'test', 't'}:
+            script = 'test'
+        if script in unit_scripts:
+            return 'unit'
+    return 'build'

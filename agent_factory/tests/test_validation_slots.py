@@ -6,9 +6,9 @@ import sys
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 
 
-def start(state, *, integration, cwd=None, slots=2, weighted=False):
-    code = 'import sys; sys.path.insert(0,sys.argv[1]); from af_validation_slots import acquire,acquire_weighted; fn=acquire_weighted if sys.argv[6]=="1" else acquire; extra={} if sys.argv[6]=="1" else {"slots":int(sys.argv[5])}; fds=fn(sys.argv[2],integration=sys.argv[3]=="1",cwd=sys.argv[4] or None,**extra); print("admitted",flush=True); sys.stdin.read(1)'
-    return subprocess.Popen([sys.executable, '-c', code, str(SCRIPTS), str(state), '1' if integration else '0', str(cwd or ''), str(slots), "1" if weighted else "0"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+def start(state, *, integration, cwd=None, slots=2, weighted=False, lightweight=False):
+    code = 'import sys; sys.path.insert(0,sys.argv[1]); from af_validation_slots import acquire,acquire_weighted; fn=acquire_weighted if sys.argv[6]=="1" else acquire; extra={"lightweight":sys.argv[7]=="1"} if sys.argv[6]=="1" else {"slots":int(sys.argv[5])}; fds=fn(sys.argv[2],integration=sys.argv[3]=="1",cwd=sys.argv[4] or None,**extra); print("admitted",flush=True); sys.stdin.read(1)'
+    return subprocess.Popen([sys.executable, '-c', code, str(SCRIPTS), str(state), '1' if integration else '0', str(cwd or ''), str(slots), "1" if weighted else "0", "1" if lightweight else "0"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
 def ready(proc, timeout=2):
@@ -157,3 +157,29 @@ def test_headroom_discounts_only_inactive_file_cache(tmp_path):
     assert working_set_bytes(tmp_path) == 6000
     (tmp_path/'memory.stat').unlink()
     assert working_set_bytes(tmp_path) == 6000
+
+
+def test_lightweight_checks_share_budget_without_browser_lock(tmp_path):
+    a = start(tmp_path, integration=False, weighted=True, lightweight=True)
+    b = start(tmp_path, integration=False, weighted=True, lightweight=True)
+    api = start(tmp_path, integration=True, weighted=True)
+    try:
+        assert ready(a) and ready(b) and ready(api)
+        release(a); release(b); release(api)
+    finally:
+        cleanup(a, b, api)
+
+
+def test_only_audited_npm_scripts_get_unit_allocation():
+    sys.path.insert(0, str(SCRIPTS))
+    from af_validation_slots import validation_kind
+    assert validation_kind('vitest.mjs', ['run']) == 'unit'
+    assert validation_kind('tsc.js', ['--noEmit']) == 'unit'
+    assert validation_kind('npm', ['run', 'test']) == 'build'
+    assert validation_kind('npm', ['run', 'test'], unit_scripts={'test'}) == 'unit'
+    assert validation_kind('npm', ['test'], unit_scripts={'test'}) == 'unit'
+    assert validation_kind('npm', ['run', 'test:ticket'], unit_scripts={'test:ticket'}) == 'unit'
+    assert validation_kind('npm', ['run', 'test:e2e'], unit_scripts={'test'}) == 'build'
+    assert validation_kind('npm', ['exec', '--', 'playwright', 'test'], unit_scripts={'test'}) == 'build'
+    assert validation_kind('test-harness.ts', ['--','npm','run','test:integration']) == 'api'
+    assert validation_kind('check-r001-foundation.ts', []) == 'build'
