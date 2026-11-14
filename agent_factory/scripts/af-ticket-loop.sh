@@ -736,24 +736,30 @@ AF_ROUND_QUIET_WARN_S="${AF_ROUND_QUIET_WARN_S:-${AF_STALL_WARN_S:-600}}"
 # Cumulative CPU-seconds of processes whose cwd is inside an isolated WORKER worktree, or "" when
 # it cannot be sampled. Sampling the whole driving session counts its mandated polling loop as work
 # and produced two hours of false "worker is active" reports while no worker advanced.
-af_hb_cpu_sample(){   # $1 = tmux session
-  local s="${1:-}" v
-  [ -n "$s" ] || return 0
+af_hb_cpu_sample(){   # $1 = one or more worker sessions
+  local sessions="${1:-}" worker v total=0 sampled=0
+  [ -n "$sessions" ] || return 0
   declare -F worker_cpu >/dev/null 2>&1 || return 0
-  v="$(worker_cpu "$s" 2>/dev/null || true)"
-  case "$v" in ''|*[!0-9]*) return 0 ;; esac
-  printf '%s' "$v"
+  for worker in $sessions; do
+    v="$(worker_cpu "$worker" 2>/dev/null || true)"
+    case "$v" in ''|*[!0-9]*) continue ;; esac
+    total=$((total + v)); sampled=1
+  done
+  [ "$sampled" = 0 ] || printf '%s' "$total"
+  return 0
 }
 
 # Hash of the session's pane with the animated chrome removed, or "" when it cannot be sampled.
 # Stripped: the spinner glyphs, the "(NmNNs" / "· NNs" elapsed counters and the token meter — all
 # of which change on every single poll whether or not the worker emitted a byte of real output.
 af_hb_pane_sample(){   # $1 = tmux session
-  local s="${1:-}" pane
+  local s="${1:-}" pane worker
   [ -n "$s" ] || return 0
   command -v tmux >/dev/null 2>&1 || return 0
-  tmux has-session -t "$s" >/dev/null 2>&1 || return 0
-  pane="$(tmux capture-pane -t "$s" -p 2>/dev/null || true)"
+  pane="$(for worker in $s; do
+    tmux has-session -t "$worker" >/dev/null 2>&1 || continue
+    tmux capture-pane -t "$worker" -p 2>/dev/null || true
+  done)"
   [ -n "$pane" ] || return 0
   printf '%s' "$pane" \
     | sed -E 's/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✢✳✶✻✽*·]+/ /g; s/[0-9]+m[0-9]+s/ /g; s/(^|[[:space:]])[⇣⇡↓↑]?[0-9][0-9.]*[kKmMs]([[:space:]]|$)/ /g; s/(^|[[:space:]])[⇣⇡↓↑]?[0-9][0-9.]*[kKmMs]([[:space:]]|$)/ /g; s/[0-9.]+[kKmM]? tokens/ /g; s/[[:space:]]+/ /g' \
@@ -766,7 +772,7 @@ af_round_heartbeat(){   # <round> <progress-signature> <outstanding ids>
   local rnd="${1:-?}" sig="${2:-}" ids="${3:-}" nowt sess cpu pane quiet_for
   local cpu_state pane_state cpu_quiet=0 pane_quiet=0
   nowt="$(date +%s)"
-  sess="${AF_HB_SESSION:-${SESSION:-}}"
+  sess="${AF_HB_SESSION:-${AF_WORKER_SESSIONS:-${SESSION:-}}}"
   cpu="$(af_hb_cpu_sample "$sess")"
   pane="$(af_hb_pane_sample "$sess")"
   if [ "$sig" != "${AF_HB_SIG:-__unset__}" ]; then
@@ -1140,9 +1146,9 @@ af_launch_agent(){   # $1=tmux session  $2=optional initial prompt (grok/codex o
   if af_prompt_is_argv && [ -n "$prompt" ]; then
     pf="${AF_STATE_DIR}/af-${sess}.prompt"
     printf '%s' "$prompt" > "$pf"
-    tmux send-keys -t "$sess" "cd $WT && set -a && . '${AF_STATE_DIR}/af-agent.env' && set +a && $CLAUDE_LAUNCH -- \"\$(cat '$pf')\"" Enter
+    tmux send-keys -t "$sess" "cd $WT && set -a && . '${AF_STATE_DIR}/af-agent-${PROJECT}.env' && set +a && $CLAUDE_LAUNCH -- \"\$(cat '$pf')\"" Enter
   else
-    tmux send-keys -t "$sess" "cd $WT && set -a && . '${AF_STATE_DIR}/af-agent.env' && set +a && $CLAUDE_LAUNCH" Enter
+    tmux send-keys -t "$sess" "cd $WT && set -a && . '${AF_STATE_DIR}/af-agent-${PROJECT}.env' && set +a && $CLAUDE_LAUNCH" Enter
   fi
 }
 
@@ -1195,6 +1201,98 @@ af_wait_ready(){   # $1=tmux session  $2=optional poll cap (default READY_POLL_M
   return 1
 }
 
+# ---------------------------------------------------- Codex-native parallel rounds (2026-10-29) ----
+# A polling coordinator previously improvised extra CLI launchers instead of doing ticket work.
+# Earlier launches of unconfigured backends scored zero (sportsites-parity,
+# 2026-10-29). So for the codex backend the DRIVER fans out: one Codex tmux session per ticket, each
+# told to build exactly one ticket inline. The wait loop then watches every session in
+# AF_WORKER_SESSIONS instead of one. Width is still capped by AF_BATCH_MAX AND by live resources.
+AF_WORKER_SESSIONS=""
+af_sessions_pane(){   # concatenated capture of every worker session
+  local sx out=""
+  for sx in $AF_WORKER_SESSIONS; do
+    out="$out$(tmux capture-pane -t "$sx" -p 2>/dev/null || true)
+"
+  done
+  printf '%s' "$out"
+}
+af_any_session_alive(){ local sx; for sx in $AF_WORKER_SESSIONS; do tmux has-session -t "$sx" 2>/dev/null && return 0; done; return 1; }
+af_any_children_busy(){ local sx; for sx in $AF_WORKER_SESSIONS; do verify_children_busy "$sx" && return 0; done; return 1; }
+
+# A warning budget is advisory while workers show activity. The unchanged-pane
+# guard still ends stalled rounds; an explicit hard budget retains its grace cap.
+af_round_can_extend(){
+  local action=$1 spent=$2 maximum=$3 pane_recent=$4 child_busy=$5
+  [ "$pane_recent" = 1 ] || [ "$child_busy" = 1 ] || return 1
+  [ "$action" = warn ] || [ "$spent" -lt "$maximum" ]
+}
+af_kill_worker_sessions(){
+  local sx pid
+  for sx in $AF_WORKER_SESSIONS; do
+    pid=$(tmux list-panes -t "$sx" -F '#{pane_pid}' 2>/dev/null | head -1 || true)
+    tmux kill-session -t "$sx" 2>/dev/null || true
+    [ -n "${pid:-}" ] && pkill -P "$pid" 2>/dev/null || true
+  done
+}
+# Width the MACHINE can carry right now: free memory divided by AF_GB_PER_WORKER (default 4 GB, a
+# Codex session plus a checkout plus its tests), and 1 when the 1-minute load already exceeds the
+# core count. The owner's instruction: fan out, but never swamp the box.
+af_resource_cap(){
+  local mem_gb per cap load cores
+  [ -r /proc/meminfo ] || { echo "${BATCH_MAX:-4}"; return 0; }
+  mem_gb=$(awk '/MemAvailable/{printf "%d",$2/1048576}' /proc/meminfo 2>/dev/null || echo 0)
+  per="${AF_GB_PER_WORKER:-4}"; cap=$(( mem_gb / per )); [ "$cap" -lt 1 ] && cap=1
+  load=$(awk '{printf "%d",$1}' /proc/loadavg 2>/dev/null || echo 0); cores="${_cores:-4}"
+  [ "$load" -ge "$cores" ] && cap=1
+  echo "$cap"
+}
+
+# ROLLING BATCHES (AF_ROLLING=1, 2026-10-30). Owner direction: keep batches so the merged tree is
+# bulk-verified, but never let a finished worker idle while its siblings finish. When a ticket of
+# the current batch finishes, the freed slot is refilled from the frontier at once; the new ticket
+# belongs to the NEXT batch (AF_CARRY_IDS / AF_CARRY_SESSIONS) and its session is carried across the
+# batch boundary untouched. When the LAST ticket of the current batch finishes, that batch's
+# worktrees are integrated, purged, reaped and verified; the carried sessions keep building meanwhile,
+# and post-merge verification runs in the background (AF_VERIFY_PID), overlapping with them. The
+# next integrate waits for that verification first, so the verifier never has the tree change under
+# it. The ids/sessions of the batch being waited on stay in "$@"/AF_WORKER_SESSIONS exactly as before.
+AF_CARRY_IDS=""; AF_CARRY_SESSIONS=""; AF_VERIFY_PID=""
+af_in_list(){ case " $2 " in *" $1 "*) return 0;; esac; return 1; }
+af_count(){ set -- $1; echo $#; }
+af_rolling_refill(){   # $1 = open count of the current batch; launches next-batch workers into free slots
+  local open="$1" inflight slots rcap pick new wid wsess k=0 taken
+  [ "${AF_ROLLING:-0}" = "1" ] && [ "$BACKEND" = codex ] || return 0
+  # Drain switch: `touch $AF_STATE_DIR/af-norefill-$PROJECT` stops refilling so the batch reaches a
+  # real boundary (no carried workers) — the only safe moment to swap the driver or stop the loop.
+  [ -e "$AF_STATE_DIR/af-norefill-$PROJECT" ] && { say "rolling refill SUSPENDED (af-norefill-$PROJECT present) — draining to a clean boundary"; return 0; }
+  inflight=$(( open + $(af_count "$AF_CARRY_IDS") ))
+  rcap=$(af_resource_cap); [ "$rcap" -gt "$BATCH_MAX" ] && rcap="$BATCH_MAX"
+  [ -n "${MAX:-}" ] && [ "$MAX" -gt 0 ] 2>/dev/null && [ $((MAX - n - $(af_count "$AF_CARRY_IDS"))) -lt "$rcap" ] && rcap=$((MAX - n - $(af_count "$AF_CARRY_IDS")))
+  slots=$(( rcap - inflight )); [ "$slots" -gt 0 ] || return 0
+  taken="$AF_ROUND_IDS $AF_CARRY_IDS"
+  pick=$(praxis_q ready_batch $((inflight + slots + 6))) || pick=""
+  new=""
+  for wid in $pick; do af_in_list "$wid" "$taken" && continue; new="$new $wid"; k=$((k+1)); [ "$k" -ge "$slots" ] && break; done
+  if [ "$k" -lt "$slots" ] && af_dependencies_advisory; then
+    taken="$taken $new"
+    pick=$(praxis_q any_batch $((inflight + slots + 6))) || pick=""
+    for wid in $pick; do af_in_list "$wid" "$taken" && continue; new="$new $wid"; k=$((k+1)); [ "$k" -ge "$slots" ] && break; done
+  fi
+  [ -n "${new// /}" ] || return 0
+  for wid in $new; do
+    wsess="${SESSION}-${wid}"
+    tmux has-session -t "$wsess" 2>/dev/null && continue
+    af_launch_agent "$wsess" "$(af_worker_prompt "$wid")"
+    if af_wait_ready "$wsess" $((READY_POLL_MAX * 3)); then
+      AF_CARRY_IDS="${AF_CARRY_IDS:+$AF_CARRY_IDS }$wid"; AF_CARRY_SESSIONS="${AF_CARRY_SESSIONS:+$AF_CARRY_SESSIONS }$wsess"
+      say "rolling refill: slot freed in round #$round — dispatched $wid early (it joins the NEXT batch; in flight now: $open of this batch + $(af_count "$AF_CARRY_IDS") carried)"
+    else
+      say "WARNING: rolling refill worker for $wid never signalled ready — killed; $wid stays unclaimed"
+      tmux kill-session -t "$wsess" 2>/dev/null || true
+    fi
+  done
+}
+
 # Source the project's pinned Praxis identity so every _praxis call authenticates —
 # without this, auth fails closed, stderr is swallowed by claimable()'s redirect,
 # and `set -e` kills the whole driver on its very first call with NO log output at
@@ -1208,7 +1306,7 @@ d = json.load(open('$WT/.claude/settings.local.json'))['env']
 lines = []
 for k, v in d.items():
     lines.append('export %s=%s' % (k, shlex.quote(str(v))))
-open('$AF_STATE_DIR/af-agent.env', 'w').write('\\n'.join(lines) + '\\n')
+open('$AF_STATE_DIR/af-agent-${PROJECT}.env', 'w').write('\\n'.join(lines) + '\\n')
 print('\\n'.join(lines))
 ")"
 
@@ -1740,6 +1838,41 @@ print(' '.join(out))
 PYEOF
 }
 
+# NEVER-STOP MODE (AF_NEVER_STOP=1, 2026-10-30). Owner direction: dependencies are a SUGGESTED order,
+# a blocked ticket stays blocked for later human review, and nothing upstream of it may wait. When
+# the dependency-ready frontier is empty, dispatch any open ticket instead, lowest id first.
+af_dependencies_advisory(){ [ "${AF_DEPENDENCIES_ADVISORY:-0}" = "1" ] || [ "${AF_NEVER_STOP:-0}" = "1" ]; }
+
+any_batch(){  # -> space-separated ids of ANY open, non-blocked, non-parked ticket, capped at $1
+  $PY - "$PROJECT" "${1:-15}" <<'PYEOF' 2>/dev/null
+import os, sys
+import _praxis, _ticket_state as ts
+p, cap = sys.argv[1], int(sys.argv[2])
+facts = _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}')
+ref = (p, f'prd-{p}')
+out = []
+def key(t):
+    r = str((t.get('meta') or {}).get('requirement_id') or '')
+    return (0, int(r[1:])) if r[1:].isdigit() else (1, r)
+for t in sorted(facts, key=key):
+    m = t.get('meta') or {}
+    rid = m.get('requirement_id') or t.get('id')
+    if not rid or not ts.owes_work(t) or m.get('build_state') in ('blocked', 'in_progress'):
+        continue
+    if m.get('scope') == 'post-mvp' and os.environ.get('AF_INCLUDE_POST_MVP') != '1':
+        continue
+    try:
+        if ts.parked_on_manual(t, ref):
+            continue
+    except Exception:
+        pass
+    out.append(str(rid))
+    if len(out) >= cap:
+        break
+print(' '.join(out))
+PYEOF
+}
+
 finding_guard(){  # args: round-no ids... -> regresses any ticket that answered a finding with nothing
   # A ticket carrying an OPEN post-merge verification finding may not close by changing nothing.
   #
@@ -2020,14 +2153,17 @@ release_inprogress(){  # release any live lease before a fresh session claims (p
   # state, so it now goes through the sanctioned, unguarded /requirements/regress endpoint, which
   # needs no marker at all. Do not reintroduce the bracket.
   $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
-import sys
+import os, sys
 import _praxis
 p=sys.argv[1]; kw=dict(space=p, snapshot=f'prd-{p}')
 NOTE=('lease released by af-ticket-loop: prior session ended (context cap or crash), '
       'returning to incomplete for a fresh session.')
+carry=set(os.environ.get('AF_CARRY_IDS','').split())
 stranded={}
 for f in _praxis.facts_by(category='requirement', **kw):
     m=f.get('meta') or {}
+    if str(m.get('requirement_id')) in carry:
+        continue   # AF_ROLLING: a live carried worker owns this lease
     if m.get('build_state')=='in_progress':
         # Null the lease keys alongside the regress so nothing dangles, and record WHY -- the next
         # worker's briefing reads audit_disposition back.
@@ -2716,6 +2852,11 @@ sweep_worktrees(){
     # than a path prefix — strictly stronger than the path test where it matters, and satisfiable.
     [ -n "$main_wt" ] && [ "$path" = "$main_wt" ] && continue
     local head; head=$(git -C "$path" rev-parse HEAD 2>/dev/null || echo "")
+    if [ -n "${AF_CARRY_IDS// /}" ]; then
+      local _br _cid _skip=0; _br=$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+      for _cid in $AF_CARRY_IDS; do case "$_br $path" in *"$_cid"*) _skip=1;; esac; done
+      [ "$_skip" = "1" ] && { say "worktree $path belongs to carried in-flight worker — kept"; kept=$((kept+1)); continue; }
+    fi
     af_worktree_is_removable "$path" "$head" || continue
     # Never yank a tree out from under a live worker: its evals are executing against these files.
     #
@@ -3532,6 +3673,22 @@ af_round_is_fast_forward(){   # $1 = pre-merge sha, $2.. = the round's ticket id
   [ -z "$(git -C "$WT" rev-list --merges "$premerge..HEAD" 2>/dev/null)" ]
 }
 
+af_round_has_tag(){   # $1 = tag, $2.. = requirement ids -> 0 if any carries the tag
+  local tag="$1"; shift
+  $PY - "$PROJECT" "$tag" "$@" <<'PYEOF' 2>/dev/null
+import sys
+import _praxis
+p, tag, ids = sys.argv[1], sys.argv[2], set(sys.argv[3:])
+try:
+    facts = _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}')
+except Exception:
+    sys.stderr.write('phase-gate lookup unavailable; using full validation\n')
+    sys.exit(0)
+hit = any(tag in ((f.get('meta') or {}).get('tags') or []) for f in facts if str((f.get('meta') or {}).get('requirement_id')) in ids)
+sys.exit(0 if hit else 1)
+PYEOF
+}
+
 verify_round(){   # $1 = round number, $2.. = the round's ticket ids
   local rnd="$1"; shift
   # An empty baseline would turn the attribution rule into prose about a commit that does not exist,
@@ -3592,7 +3749,16 @@ PYEOF
   if [ -n "${AF_PROJECT_PATHS:-}" ]; then
     scope_note=" THIS PROJECT'S CODE IS ONLY UNDER: ${AF_PROJECT_PATHS}. The repository is shared with other work, so every 'whole-repo gate' below means THIS project's gates -- the build, typecheck, lint and test commands for the code under those paths -- and NOT the test suites of code outside them, which belong to other projects and are out of scope for this verdict. Never create, modify or commit files outside those paths."
   fi
-  local vprompt="Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv.${scope_note:-}${ff_note:-} Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. THIS IS THE ONLY PLACE THOSE GATES RUN: the workers were told to skip them so that N of them would not run N concurrent suites, so you are the authoritative repo-wide gate for this round and nothing else has proven the merged tree compiles or passes. If any gate is red you must ATTRIBUTE each failure before you regress anything, and the burden of proof is on attribution, not on innocence. The tree this round merged INTO is commit $premerge, and it was very likely ALREADY RED — this repository carries pre-existing failures that no ticket in this round caused, and on this box there are dozens of them. So for every failing test, gate or lint error you find, determine whether it ALSO fails at $premerge: make a scratch tree with git worktree add /tmp/af-premerge-$rnd $premerge, run that one failure there, and remove the tree with git worktree remove --force when you are done. A failure that reproduces at $premerge is PRE-EXISTING: list it in the preexisting array so it is visible as debt, and DO NOT put any ticket in regressed for it. Regressing a ticket over a failure that predates it sends a worker to rebuild work that was never wrong, and because the failure is still there when the rebuild lands, the very same verdict regresses it again — forever, at full cost. That infinite loop is not hypothetical: praxis round #1 regressed R0a while its own verdict recorded that R0a's acceptance passed 4/4 and that its diff touched none of the failing files. Only a failure that does NOT reproduce at $premerge belongs to this round, and only those may cause a regression: identify which ticket's change caused it and regress that ticket per step 3, and if you genuinely cannot attribute a NEW failure to one ticket, regress the whole batch rather than passing a tree this round broke. gates_green reports whether the round introduced NO NEW failures — a tree that is red only in the ways it was already red is gates_green true, with the debt named in preexisting. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. FIRST, THOUGH: NOT EVERYTHING IN THAT DIFF IS THIS ROUND'S WORK. The integration branch also receives commits from the repository's DEFAULT branch${basebr:+ ($basebr)}, which keeps moving while a build runs — tooling fixes, other people's merges — and those ride into the merged tree without belonging to any ticket here. Before you attribute ANY defect to a ticket, check whether the change is already present on that default branch (git log <default-branch> --oneline -- <path>, or git merge-base --is-ancestor <commit> <default-branch>). If it is, it is NOT this round's work: report it in notes and regress NOBODY for it. This is not hypothetical — praxis R3a was regressed THREE separate times for changes that came from the default branch and had nothing to do with its ticket, rebuilding it from scratch each time, and the third one also blocked the seven tickets waiting behind it. A ticket is answerable for the diff ITS OWN branch introduced, and for nothing else. If this round merged only ONE ticket, the cross-ticket lens is trivially satisfied and you may skip lens A, but step 1's gates and lenses B and C still run in full — they are the only repo-wide check this ticket gets. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: NAME every ticket whose work does NOT survive integration. A ticket whose meta.verify reads manual is the one class where absence of a commit is NOT evidence of anything: its acceptance is a human sign-off over something rendered or observed, so it produces no commit BY DESIGN and its work being missing from src, tests and docs is the expected shape, not a defect. Judge such a ticket only on code it actually landed, and never name it for having produced no merged commit — that regression is suppressed by the loop and reported as parked awaiting sign-off, so naming it wastes the round. Do NOT write that regression to Praxis yourself and do not try to fix the ticket — the loop that dispatched you performs the regression from your verdict, using a write path it already owns. Your job is the judgement, not the write. This split is deliberate: when verifiers were asked to do their own Praxis write, nine consecutive rounds reported zero regressions while their own notes named the failing tickets, so every one of those tickets stayed marked finished on work that had failed integration. Step 3b: read the file $FINDINGS. It is a JSON array of the OPEN findings these tickets still owe an answer to, each with id, check_id, symptom and evidence. If the array is empty, skip this step entirely. Otherwise, for EACH entry do TWO INDEPENDENT things and never let either one decide the other. First, run the check named by check_id against the merged tree and record whether it passes; if check_id is empty there is no check to run and check_passed is false. Second, and SEPARATELY, re-evaluate the recorded symptom itself against the merged tree — read the code, run the specific reproduction the evidence describes — and record whether that symptom is STILL PRESENT. A check that exits zero is NOT evidence the symptom is gone: a check can be defeated by a change that satisfies the command while leaving the defect exactly where it was, and the case where your two answers DISAGREE is the single most valuable thing you can report here, so report both honestly rather than making them agree. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, notes which is one short string, preexisting which is an array of strings naming every failure you PROVED also fails at $premerge (write an empty array only if you proved there were none — never as a shortcut for not having checked), regressed which is an array of OBJECTS — one per ticket that must be regressed, each with four string fields: id the ticket id, reason what actually failed stated concretely, evidence the exact failing test name, gate, file and error text or the precise merge symptom, and fix what the rebuild must do differently — plus an OPTIONAL fifth string field check, a single command that FAILS on this broken merged tree and would PASS once the fix lands. Supply check only when you actually ran that command and watched it fail; a guess is worse than omitting it. It must be one plain command with no shell operators, no pipes, no redirection and no absolute paths, starting with one of pytest, python, python3, npm, npx, make, ruff, mypy, eslint, playwright or grep — anything else is rejected and the check is dropped, though your regression still lands. And findings_recheck which is an array of objects carrying step 3b's answers, each with id the ticket id, check_id copied from $FINDINGS, check_passed true or false, and symptom_present true or false; write an empty array if step 3b was skipped. An empty array asserts every ticket survived integration. Write these for the NEXT WORKER, not for a log: it will claim the ticket cold with no memory of this round, so a bare id or a vague \"tests failed\" wastes an entire rebuild while it re-derives what you already know. Name the failing test, quote the error, and say what the fix has to address. Good: {\"id\":\"REM-10\",\"reason\":\"its new default-prefix-attribution controller is unregistered in RESTRICTED_RECORD_MANIFEST and the permission_pages seed\",\"evidence\":\"chat14-restricted-record-manifest.test.ts and chat16-chart-access-record.test.ts both fail on the merged tree with 'scope not registered'\",\"fix\":\"register the new controller/scope in RESTRICTED_RECORD_MANIFEST and add its permission_pages seed row, then re-run both suites against the merged tree\"}. Bad: {\"id\":\"REM-10\",\"reason\":\"failed\",\"evidence\":\"\",\"fix\":\"fix it\"}. Write that file LAST, after everything else is done, and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. If you cannot verify at all, that is itself a verdict: write the JSON with verdict fail and notes saying why, rather than asking what to do."
+  local fast_note=""
+  if [ "${AF_FAST_VERIFY:-0}" = "1" ]; then
+    if af_round_has_tag phase-gate "$@"; then
+      say "round #$rnd verification: FULL lane (a phase-gate ticket landed)"
+    else
+      fast_note=" VERIFICATION FAST LANE (AF_FAST_VERIFY=1): this is an integration feedback lane for a round without phase-gate tickets. Run the repo-wide typecheck and dependency-aware tests for changed modules AND transitive callers/dependents, plus the required acceptance, runtime, authorization and cross-organization cases that import graphs cannot detect. Target ${AF_VERIFY_FAST_BUDGET_S:-600} seconds, with no hard cutoff and no automatic pass for an unfinished check. Do not add a full failure census merely for timing. Full suite/build/release audits remain required at phase gates; explicitly pinned checks still run here. Record exact revision, commands, fixtures, durations and every unrun or failed check."
+      say "round #$rnd verification: FAST lane (no phase-gate ticket in this round)"
+    fi
+  fi
+  local vprompt="Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv.${scope_note:-}${ff_note:-}${fast_note:-} Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. THIS IS THE ONLY PLACE THOSE GATES RUN: the workers were told to skip them so that N of them would not run N concurrent suites, so you are the authoritative repo-wide gate for this round and nothing else has proven the merged tree compiles or passes. If any gate is red you must ATTRIBUTE each failure before you regress anything, and the burden of proof is on attribution, not on innocence. The tree this round merged INTO is commit $premerge, and it was very likely ALREADY RED — this repository carries pre-existing failures that no ticket in this round caused, and on this box there are dozens of them. So for every failing test, gate or lint error you find, determine whether it ALSO fails at $premerge: make a scratch tree with git worktree add /tmp/af-premerge-$rnd $premerge, run that one failure there, and remove the tree with git worktree remove --force when you are done. A failure that reproduces at $premerge is PRE-EXISTING: list it in the preexisting array so it is visible as debt, and DO NOT put any ticket in regressed for it. Regressing a ticket over a failure that predates it sends a worker to rebuild work that was never wrong, and because the failure is still there when the rebuild lands, the very same verdict regresses it again — forever, at full cost. That infinite loop is not hypothetical: praxis round #1 regressed R0a while its own verdict recorded that R0a's acceptance passed 4/4 and that its diff touched none of the failing files. Only a failure that does NOT reproduce at $premerge belongs to this round, and only those may cause a regression: identify which ticket's change caused it and regress that ticket per step 3, and if you genuinely cannot attribute a NEW failure to one ticket, regress the whole batch rather than passing a tree this round broke. gates_green reports whether the round introduced NO NEW failures — a tree that is red only in the ways it was already red is gates_green true, with the debt named in preexisting. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. FIRST, THOUGH: NOT EVERYTHING IN THAT DIFF IS THIS ROUND'S WORK. The integration branch also receives commits from the repository's DEFAULT branch${basebr:+ ($basebr)}, which keeps moving while a build runs — tooling fixes, other people's merges — and those ride into the merged tree without belonging to any ticket here. Before you attribute ANY defect to a ticket, check whether the change is already present on that default branch (git log <default-branch> --oneline -- <path>, or git merge-base --is-ancestor <commit> <default-branch>). If it is, it is NOT this round's work: report it in notes and regress NOBODY for it. This is not hypothetical — praxis R3a was regressed THREE separate times for changes that came from the default branch and had nothing to do with its ticket, rebuilding it from scratch each time, and the third one also blocked the seven tickets waiting behind it. A ticket is answerable for the diff ITS OWN branch introduced, and for nothing else. If this round merged only ONE ticket, the cross-ticket lens is trivially satisfied and you may skip lens A, but step 1's gates and lenses B and C still run in full — they are the only repo-wide check this ticket gets. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: NAME every ticket whose work does NOT survive integration. A ticket whose meta.verify reads manual is the one class where absence of a commit is NOT evidence of anything: its acceptance is a human sign-off over something rendered or observed, so it produces no commit BY DESIGN and its work being missing from src, tests and docs is the expected shape, not a defect. Judge such a ticket only on code it actually landed, and never name it for having produced no merged commit — that regression is suppressed by the loop and reported as parked awaiting sign-off, so naming it wastes the round. Do NOT write that regression to Praxis yourself and do not try to fix the ticket — the loop that dispatched you performs the regression from your verdict, using a write path it already owns. Your job is the judgement, not the write. This split is deliberate: when verifiers were asked to do their own Praxis write, nine consecutive rounds reported zero regressions while their own notes named the failing tickets, so every one of those tickets stayed marked finished on work that had failed integration. Step 3b: read the file $FINDINGS. It is a JSON array of the OPEN findings these tickets still owe an answer to, each with id, check_id, symptom and evidence. If the array is empty, skip this step entirely. Otherwise, for EACH entry do TWO INDEPENDENT things and never let either one decide the other. First, run the check named by check_id against the merged tree and record whether it passes; if check_id is empty there is no check to run and check_passed is false. Second, and SEPARATELY, re-evaluate the recorded symptom itself against the merged tree — read the code, run the specific reproduction the evidence describes — and record whether that symptom is STILL PRESENT. A check that exits zero is NOT evidence the symptom is gone: a check can be defeated by a change that satisfies the command while leaving the defect exactly where it was, and the case where your two answers DISAGREE is the single most valuable thing you can report here, so report both honestly rather than making them agree. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, notes which is one short string, preexisting which is an array of strings naming every failure you PROVED also fails at $premerge (write an empty array only if you proved there were none — never as a shortcut for not having checked), regressed which is an array of OBJECTS — one per ticket that must be regressed, each with four string fields: id the ticket id, reason what actually failed stated concretely, evidence the exact failing test name, gate, file and error text or the precise merge symptom, and fix what the rebuild must do differently — plus an OPTIONAL fifth string field check, a single command that FAILS on this broken merged tree and would PASS once the fix lands. Supply check only when you actually ran that command and watched it fail; a guess is worse than omitting it. It must be one plain command with no shell operators, no pipes, no redirection and no absolute paths, starting with one of pytest, python, python3, npm, npx, make, ruff, mypy, eslint, playwright or grep — anything else is rejected and the check is dropped, though your regression still lands. And findings_recheck which is an array of objects carrying step 3b's answers, each with id the ticket id, check_id copied from $FINDINGS, check_passed true or false, and symptom_present true or false; write an empty array if step 3b was skipped. An empty array asserts every ticket survived integration. Write these for the NEXT WORKER, not for a log: it will claim the ticket cold with no memory of this round, so a bare id or a vague \"tests failed\" wastes an entire rebuild while it re-derives what you already know. Name the failing test, quote the error, and say what the fix has to address. Good: {\"id\":\"REM-10\",\"reason\":\"its new default-prefix-attribution controller is unregistered in RESTRICTED_RECORD_MANIFEST and the permission_pages seed\",\"evidence\":\"chat14-restricted-record-manifest.test.ts and chat16-chart-access-record.test.ts both fail on the merged tree with 'scope not registered'\",\"fix\":\"register the new controller/scope in RESTRICTED_RECORD_MANIFEST and add its permission_pages seed row, then re-run both suites against the merged tree\"}. Bad: {\"id\":\"REM-10\",\"reason\":\"failed\",\"evidence\":\"\",\"fix\":\"fix it\"}. Write that file LAST, after everything else is done, and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. If you cannot verify at all, that is itself a verdict: write the JSON with verdict fail and notes saying why, rather than asking what to do."
   vprompt="$vprompt AUTHORSHIP IS AN ENFORCED INPUT, not advice. Read $AUTHORSHIP before grading. It maps each ticket to the exact paths introduced by commits whose subject ends in that ticket's provenance marker. Scope every per-ticket graded gate, typed-and-linted gate, source-level expectation, and test-integrity finding to that ticket's listed paths. You may inspect and run the whole merged tree for integration failures, but you may not bill a ticket for a finding in an unlisted file or for a default-branch change it merely inherited. THIS AMENDS STEP 4'S EARLIER EXACT-SCHEMA WORDING: every object in regressed MUST add a REQUIRED paths field as a non-empty JSON array, in addition to id/reason/evidence/fix and the optional check; every listed path must appear under that ticket in $AUTHORSHIP. The driver rejects the whole verdict otherwise. TEST INTEGRITY IS ALSO ENFORCED. Read $TEST_INTEGRITY. Every entry is a deterministic finding that this round deleted an assertion or replaced an exact comparison with a membership check. Each must fail the lens and regress the ticket that authored its path. You may add context, but you may not waive one because the new test passes. Never change production behavior or a measurement threshold merely to push a failing observation under its bar; fix the implementation the check was measuring."
   vprompt="$vprompt VALIDATION EXECUTION POLICY: use fail-fast test execution by default. Do not override it with --bail=0 merely to collect a full failure census. On a failing gate, diagnose and reproduce the specific failing case at the exact baseline before repeating broad commands. Preserve required gate coverage and report every unrun or failed gate honestly; fail-fast red or a baseline first-failure match is never a whole-suite pass. Reuse only evidence matching the exact committed tree, command and fixture context."
   af_launch_agent "$vsession" "$vprompt"
@@ -3603,6 +3769,7 @@ PYEOF
     tmux send-keys -t "$vsession" "$vprompt"
     sleep 3; tmux send-keys -t "$vsession" Enter
   fi
+  local vstart; vstart=$(date +%s)
   say "round #$rnd: post-merge verification dispatched over $ids_csv"
 
   local vwaited=0 vstall=0 vhash="" vlast="" vlastpane=""
@@ -3754,6 +3921,9 @@ print("%sverdict=%s gates_green=%s regressed=%d%s :: %s" % (
     str(d.get("notes", ""))[:200]))
 PYEOF
 )
+  local vsecs=$(( $(date +%s) - ${vstart:-$(date +%s)} ))
+  say "round #$rnd verification took $((vsecs/60))m$((vsecs%60))s"
+  [ "$vsecs" -gt "${AF_VERIFY_WARN_S:-600}" ] && say "WARNING: verification wall time $((vsecs/60))m exceeds ${AF_VERIFY_WARN_S:-600}s — test suite creep; prune or re-scope before it crawls"
   say "round #$rnd verification: $summary"
   case "$summary" in
     INCOHERENT*|verdict=UNREADABLE*|verdict=UNPARSEABLE*)
@@ -4328,12 +4498,44 @@ while :; do
 
   # Degraded, not fatal: a lease that goes unreleased costs this round one ticket, whereas dying
   # here costs the whole run — and dying here is what `set -e` did before the `|| say`.
+  # Restart request (`touch $AF_STATE_DIR/af-restart-$PROJECT`): exit 0 HERE, at a clean boundary —
+  # the previous batch is integrated and its verification has been waited on, nothing is in flight
+  # unless carried workers exist (the norefill drain switch empties those first). An external
+  # watcher that kills sessions on its own schedule can land between "last worker exits" and
+  # "integrate", which is exactly what stranded R34/R94 on 2026-10-30; this is the safe way.
+  if [ -e "$AF_STATE_DIR/af-restart-$PROJECT" ] && [ -z "${AF_CARRY_IDS// /}" ]; then
+    af_wait_verify; rm -f "$AF_STATE_DIR/af-restart-$PROJECT" "$AF_STATE_DIR/af-norefill-$PROJECT"
+    say "RESTART REQUESTED (af-restart-$PROJECT) — exiting cleanly at a round boundary; the launcher/watcher relaunches with the driver on disk"
+    exit 0
+  fi
+  export AF_CARRY_IDS
   release_inprogress >/dev/null 2>&1 || say "WARNING: could not release stale leases this pass — a crashed session's ticket may sit out this round"
 
   # Compute the frontier AFTER releasing dead leases, so a ticket stranded in_progress by a crashed
   # session is eligible for this round instead of sitting out until someone notices.
   budget=$((MAX - n)); [ "$budget" -lt "$BATCH_MAX" ] && cap="$budget" || cap="$BATCH_MAX"
+  rcap=$(af_resource_cap); if [ "$rcap" -lt "$cap" ]; then say "resource cap: ${rcap} worker(s) this round (free memory / AF_GB_PER_WORKER=${AF_GB_PER_WORKER:-4}G, load vs ${_cores:-?} cores) — below AF_BATCH_MAX=$BATCH_MAX"; cap="$rcap"; fi
   if ! batch=$(praxis_q ready_batch "$cap"); then outage "ready_batch"; continue; fi
+  if af_dependencies_advisory && [ "$(af_count "$batch")" -lt "$cap" ]; then
+    # Dependencies are a suggested order (owner direction): when the dependency-ready frontier is
+    # thinner than the cap, top it up with open tickets whose prerequisites are unfinished or blocked,
+    # instead of running a 1-wide round on a 5-wide box (observed 2026-10-30 21:10: claimable=56, 1 dispatched).
+    nb=""; k=$(af_count "$batch")
+    for wid in $(praxis_q any_batch $((cap + 8)) 2>/dev/null || true); do
+      af_in_list "$wid" "$batch" && continue; [ "$k" -ge "$cap" ] && break; nb="$nb $wid"; k=$((k+1))
+    done
+    if [ -n "${nb// /}" ]; then
+      say "dependency order advisory: frontier has $(af_count "$batch") ready ticket(s), topping up to $cap with open ticket(s) whose prerequisites are unfinished or blocked —$nb"
+      batch="${batch:+$batch }${nb# }"
+    fi
+  fi
+  if [ -n "${AF_CARRY_IDS// /}" ]; then
+    # AF_ROLLING: carried workers ARE the next batch; top up from the frontier around them.
+    nb=""; k=$(af_count "$AF_CARRY_IDS")
+    for wid in $batch; do af_in_list "$wid" "$AF_CARRY_IDS" && continue; [ "$k" -ge "$cap" ] && break; nb="$nb $wid"; k=$((k+1)); done
+    batch="$AF_CARRY_IDS$nb"
+    say "rolling batch: carrying $(af_count "$AF_CARRY_IDS") in-flight worker(s) ($AF_CARRY_IDS) into round #$((round+1))${nb:+ plus$nb}"
+  fi
   if [ -z "$batch" ]; then
     # Claimable work exists but nothing is dependency-ready: a cycle, or a chain rooted on a blocked
     # ticket. Restarting sessions cannot fix that, so halt loudly instead of spinning.
@@ -4460,11 +4662,12 @@ fi
 # an AF_WORKTREE_ROOT nested below AF_FACTORY_CHECKOUT during preflight.
 WORKTREE_LOCATION_RULE=" WORKTREE LOCATION IS A HARD PRECONDITION. Create manual trees under $AF_WORKTREE_ROOT, never under the factory checkout $AF_FACTORY_CHECKOUT. Immediately after every isolated spawn, inspect its actual worktree path. If it equals $AF_FACTORY_CHECKOUT or begins $AF_FACTORY_CHECKOUT/, interrupt that worker before it reads or edits anything, remove the clean empty tree, and respawn it under $AF_WORKTREE_ROOT. A harness-created path is not exempt. The factory checkout holds hooks imported live by every project's loop, so a ticket tree inside it mutates executable shared tooling before merge or verification."
 AUTHORED_SCOPE_RULE=" TICKET-AUTHORED SCOPE IS THE GATE BOUNDARY. Immediately after base alignment and before editing, record the current HEAD as the ticket base. For minimalism-dry, typed-and-linted, every other graded gate, and every path-scoped type or lint command, compute the changed paths from the diff between that recorded ticket base and current HEAD. Grade or type ONLY those authored paths. Do not use the aligned base's incoming files, the repository default branch's later commits, or the whole combined tree as the ticket diff. A finding in a path absent from that diff is not this ticket's finding and must neither fail nor block it. Whole-repo executable gates still run where required, but their failures are attributed by the same parent-baseline comparison and never converted into source-quality findings against unowned files."
-CLEAN_CHECKOUT_RULE=" RUN YOUR FINAL CHECKS ON A CLEAN CHECKOUT OF WHAT YOU COMMITTED. After your LAST commit, git worktree add --detach <a scratch dir> HEAD, install dependencies there, run every pinned check in that tree, record the results, then remove the scratch tree. A file that exists only in your working tree -- uncommitted, untracked or gitignored -- must never be able to make a check pass: mvpvue T01 went green on gitignored files its commits never contained. Record passes only from that clean run and only after your last commit, because post-merge verification skips its own re-run of the gates on a fast-forward merge on the strength of exactly those records."
+CLEAN_CHECKOUT_RULE=" RUN YOUR FINAL CHECKS ON A CLEAN CHECKOUT OF WHAT YOU COMMITTED. While editing, use focused checks to diagnose the change. Commit before starting expensive final validation: do not run the entire pinned suite before committing and then repeat it merely to satisfy this rule. After your LAST commit, git worktree add --detach <a scratch dir> HEAD, install dependencies there, run every pinned check in that tree, record the results, then remove the scratch tree. If a check fails, fix and commit the change before validating the new final revision; never reuse a pass from an older revision. A file that exists only in your working tree -- uncommitted, untracked or gitignored -- must never be able to make a check pass: mvpvue T01 went green on gitignored files its commits never contained. Record passes only from that clean run and only after your last commit, because post-merge verification skips its own re-run of the gates on a fast-forward merge on the strength of exactly those records."
 SWEEP_AMENDMENT="$WORKTREE_LOCATION_RULE$AUTHORED_SCOPE_RULE$SWEEP_AMENDMENT"
 SWEEP_AMENDMENT="$SWEEP_AMENDMENT$CLEAN_CHECKOUT_RULE"
 RESUME_RULE="$(af_resume_rule ${ids_csv//,/ })"
 SWEEP_AMENDMENT="$SWEEP_AMENDMENT$RESUME_RULE"
+SWEEP_AMENDMENT="$SWEEP_AMENDMENT TEST BUDGET RULE (owner direction): aim for 5–10 minutes of ordinary ticket validation, with no hard cutoff and no skipped required checks. During edits run the failing acceptance case and affected module/dependent tests. Fix known failures before repeating broad suites. Fail fast on the first failing test or gate by default; do not launch later unrelated gates while it is red. Full-census mode is only for a deliberate integration/release audit. Never run a detached shell/Python gate list that ignores nonzero exit codes. Prefer the repository's dependency-aware ticket test command with the recorded ticket-base SHA; include runtime integration and permission/scoping cases that import graphs cannot detect. Do not add a whole-package suite merely to report timing. Every pinned check remains mandatory until its contract is explicitly revised. Run expensive final checks once on the committed clean tree, recording each command, duration, exit code, revision and fixture context. For baseline attribution reproduce the specific failing cases first, reusing a matching baseline report when available; a full baseline suite is justified only when narrower attribution cannot answer the question. Full integration/release suites still run at their checkpoints. Never convert an incomplete run or known baseline failure into a passing result. The time target must not kill active tests, weaken assertions, raise caps, or silently omit coverage."
 
 # ------------------------------------------- a pinned check that was ALREADY RED before you ----
 # The rule that keeps the ticket gate and post-merge verification from contradicting each other.
@@ -4490,10 +4693,57 @@ SWEEP_AMENDMENT="$SWEEP_AMENDMENT$RESUME_RULE"
 # green when it started, which is the only way it could hide a regression.
 PREEXISTING_RULE=" ONE MORE RULE, and it is what stops the ticket gate contradicting post-merge verification. A pinned check may be a REPO-WIDE command that was ALREADY FAILING before your ticket existed — a whole-repo typecheck or lint carrying years of debt that belongs to no ticket. You cannot pass it by fixing it: sports_analysis T1b met exactly this, with mypy reporting 263 errors in 52 files across code its ticket never touched, and repairing them is its own ticket, not a precondition for every other one. You also must not record it as passed, and blocking wastes the round. So for a pinned check that is red, FIRST MEASURE whether it was already red: check out the merge-base you branched from into a scratch worktree, run the SAME command there, and compare. If the failures you see are a subset of the failures already present at the merge-base, that check PASSES for your ticket — record it as passed and put both counts and the merge-base sha in your evidence, in those words, so the next reader can check your arithmetic. If your work adds even ONE failure that the merge-base does not have, the check FAILS and it is yours to fix. This applies ONLY to a check you have PROVEN was red before you started; a check that was green at the merge-base is a check you must pass outright, and treating it otherwise is the one way this rule could hide a regression."
 
-  round_prompt="/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is derived from CPU count and on THIS machine resolves to $WORKFLOW_CAP concurrent agent(s), which would throttle a $size-wide round for no reason. Instead spawn ONE worktree-isolated subagent per ticket (Claude Agent, or Grok spawn_subagent with isolation=worktree), ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. CRITICAL — GET YOUR BASE RIGHT, before reading a single file or writing a line of code. CREATE YOUR WORKTREE FROM $INTEGRATION_REF: git worktree add -b <your-branch> <path> $INTEGRATION_REF. That is the whole fix and it costs nothing — a worktree cut from the right base has no divergence to reconcile and cannot conflict. If your harness created the worktree for you from the repo DEFAULT branch (which is not the branch this run integrates into), then BEFORE any work of your own the FIRST command you run in it is: git reset --hard $INTEGRATION_REF — the tree holds nothing of yours yet, so this loses nothing. Do NOT git merge or git rebase onto $INTEGRATION_REF to repair a harness-made base: a merge PULLS the default branch's unrelated commits into your ticket branch and a rebase REPLAYS them onto it, and either way they ride into the build alongside your work. Measured 2026-09-14: mvpvue T01's worker rebased a default-branch worktree and carried 35 unrelated A01 commits into its ticket branch. Only if you have ALREADY committed ticket work on the wrong base, move just your own commits: git rebase --onto $INTEGRATION_REF <the default branch>. BE AWARE that this rebase can conflict on files NEITHER YOU NOR YOUR TICKET TOUCHED: the default branch receives unrelated commits while a build runs, your branch carries them, and the integration ref carries a different subset of the same commits. Measured 2026-08-24: R3a and R4b both hard-stopped with 'rebase conflicted in agent_factory/tests/test_af_ticket_loop_concurrency_guards.py ... no project code was inspected or changed', over tooling commits that had nothing to do with either ticket, and that blocked all seven remaining tickets behind them. If that happens to you, the conflict is in the BASE and not in your work: resolve it by taking the integration ref's side for any file your ticket does not touch, and only record a blocker if a file you DO touch genuinely conflicts. A worker that skips this authors its change against files the integration branch does not have, and its work will not apply back onto it even cherry-picked alone; that failure is silent, because the ticket still goes green in its own tree and only the round's merge discovers the work cannot land. If BOTH commands fail, do NOT build: record the blocker on the ticket and stop, because anything built on that base is unmergeable by construction.$SWEEP_AMENDMENT$PREEXISTING_RULE All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. CRITICAL — do NOT end your turn while any ticket in that list is still unfinished. Waiting on agent-completion notifications is NOT enough: a turn that ends with workers in flight gets those workers STOPPED, and the round scores zero even though real work was happening. So HOLD the turn open by polling instead: run a shell sleep of 60 seconds, then re-query the build_state of every batch ticket from Praxis, and repeat that sleep-and-query cycle for as long as any of them is still incomplete or in_progress. Only after every batch ticket reads finished or blocked may you merge, reap, and report. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push. Every worker edits ONLY the files inside its OWN assigned worktree — the factory checkout that holds this driver and the af-build hooks is TOOLING, not the project, and editing it is out of bounds even when a ticket is about that code. Two reasons it matters: those hook files are imported at runtime by every project's loop on this machine, so a half-finished edit there can break builds that have nothing to do with this ticket; and edits made outside a worktree sit on no branch, so the round's merge step cannot see them and they are silently dropped when the round ends. For ANY factory or Praxis python invocation, run $PY rather than a bare python3 — this run preflighted that interpreter and a bare python3 may resolve to an older one whose missing tomllib makes the universal quality checks load as an empty list. Pass that same path down to every subagent you spawn.$SERVICES."
+# LEAN WORKERS (AF_LEAN_WORKERS=1): a ticket that is not a phase-gate skips the clean-checkout re-run
+# and the pre-existing-red measurement; post-merge verification covers both. Phase-gate tickets keep
+# the full contract. Returns the per-ticket amendment to append after af_round_prompt's text.
+af_worker_prompt(){   # exactly one decision-maker; no polling coordinator
+  local _amend="$SWEEP_AMENDMENT$PREEXISTING_RULE"
+  if [ "${AF_LEAN_WORKERS:-0}" = "1" ]; then
+    _amend="$(af_lean_amend "$1")"
+  fi
+  printf '%s' "/af-build $PROJECT $1 — build exactly this ONE ticket yourself, inline. Read and follow the per-ticket worker contract. Resolve the display ticket label to its canonical UUID before making Praxis get_fact/start_ticket calls. You are authorized to resolve routine code, test, fixture and policy contradictions by best judgement using established owner requirements, without approval questions. Treat prerequisites as a preferred start order, not a reason to stop; build and validate against actual available interfaces. Mark only genuine technical inability as blocked, record attempted repairs, and leave scheduling other work to the driver. A blocked prerequisite never excuses false passes or pretending missing behavior works. Create your isolated worktree under $AF_WORKTREE_ROOT FROM $INTEGRATION_REF, record that base SHA, and preserve/resume any prior correct work named below. Do not delegate, spawn another agent, run a Workflow, or spend your turn polling a child agent. You own implementation, failure diagnosis, validation, and finishing this ticket. The driver owns scheduling, integration and reaping; do not merge or reap branches yourself. Fix the first failing gate before running unrelated gates. A stopped/failed check remains failed, never a pass. Do not claim or read another ticket. Do not edit the live factory checkout $AF_FACTORY_CHECKOUT. Use $PY for factory/Praxis Python calls. Do not push. You are headless: decide routine choices and record concrete blockers rather than asking questions.$_amend$SERVICES"
+}
+
+af_lean_amend(){   # $1 = ticket id -> prints the SWEEP_AMENDMENT/PREEXISTING text to use for this worker
+  if [ "${AF_LEAN_WORKERS:-0}" = "1" ] && ! af_round_has_tag phase-gate "$1"; then
+    printf '%s' "$SWEEP_AMENDMENT LEAN RULE: run focused checks while editing, then each required pinned check once on the final committed clean tree. Do not add redundant whole-package sweeps; post-merge verification checks integration."
+  else
+    printf '%s' "$SWEEP_AMENDMENT$PREEXISTING_RULE"
+  fi
+}
+af_round_prompt(){ local ids_csv="$1" size="$2"; printf '%s' "/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is derived from CPU count and on THIS machine resolves to $WORKFLOW_CAP concurrent agent(s), which would throttle a $size-wide round for no reason. Instead spawn ONE worktree-isolated subagent per ticket (Claude Agent, or Grok spawn_subagent with isolation=worktree), ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. CRITICAL — GET YOUR BASE RIGHT, before reading a single file or writing a line of code. CREATE YOUR WORKTREE FROM $INTEGRATION_REF: git worktree add -b <your-branch> <path> $INTEGRATION_REF. That is the whole fix and it costs nothing — a worktree cut from the right base has no divergence to reconcile and cannot conflict. If your harness created the worktree for you from the repo DEFAULT branch (which is not the branch this run integrates into), then BEFORE any work of your own the FIRST command you run in it is: git reset --hard $INTEGRATION_REF — the tree holds nothing of yours yet, so this loses nothing. Do NOT git merge or git rebase onto $INTEGRATION_REF to repair a harness-made base: a merge PULLS the default branch's unrelated commits into your ticket branch and a rebase REPLAYS them onto it, and either way they ride into the build alongside your work. Measured 2026-09-14: mvpvue T01's worker rebased a default-branch worktree and carried 35 unrelated A01 commits into its ticket branch. Only if you have ALREADY committed ticket work on the wrong base, move just your own commits: git rebase --onto $INTEGRATION_REF <the default branch>. BE AWARE that this rebase can conflict on files NEITHER YOU NOR YOUR TICKET TOUCHED: the default branch receives unrelated commits while a build runs, your branch carries them, and the integration ref carries a different subset of the same commits. Measured 2026-08-24: R3a and R4b both hard-stopped with 'rebase conflicted in agent_factory/tests/test_af_ticket_loop_concurrency_guards.py ... no project code was inspected or changed', over tooling commits that had nothing to do with either ticket, and that blocked all seven remaining tickets behind them. If that happens to you, the conflict is in the BASE and not in your work: resolve it by taking the integration ref's side for any file your ticket does not touch, and only record a blocker if a file you DO touch genuinely conflicts. A worker that skips this authors its change against files the integration branch does not have, and its work will not apply back onto it even cherry-picked alone; that failure is silent, because the ticket still goes green in its own tree and only the round's merge discovers the work cannot land. If BOTH commands fail, do NOT build: record the blocker on the ticket and stop, because anything built on that base is unmergeable by construction.$SWEEP_AMENDMENT$PREEXISTING_RULE All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. CRITICAL — do NOT end your turn while any ticket in that list is still unfinished. Waiting on agent-completion notifications is NOT enough: a turn that ends with workers in flight gets those workers STOPPED, and the round scores zero even though real work was happening. So HOLD the turn open by polling instead: run a shell sleep of 60 seconds, then re-query the build_state of every batch ticket from Praxis, and repeat that sleep-and-query cycle for as long as any of them is still incomplete or in_progress. Only after every batch ticket reads finished or blocked may you merge, reap, and report. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push. Every worker edits ONLY the files inside its OWN assigned worktree — the factory checkout that holds this driver and the af-build hooks is TOOLING, not the project, and editing it is out of bounds even when a ticket is about that code. Two reasons it matters: those hook files are imported at runtime by every project's loop on this machine, so a half-finished edit there can break builds that have nothing to do with this ticket; and edits made outside a worktree sit on no branch, so the round's merge step cannot see them and they are silently dropped when the round ends. For ANY factory or Praxis python invocation, run $PY rather than a bare python3 — this run preflighted that interpreter and a bare python3 may resolve to an older one whose missing tomllib makes the universal quality checks load as an empty list. Pass that same path down to every subagent you spawn.$SERVICES."; }
+  round_prompt="$(af_round_prompt "$ids_csv" "$size")"
   # The env preamble runs in the tmux shell AFTER ~/.bashrc has already sourced the
   # machine-wide backend file, so it deliberately overrides that file rather than
   # trusting it to agree with $AF_MODEL_BACKEND. Grok gets the prompt as argv.
+  AF_ROUND_IDS="$*"
+  if [ "$BACKEND" = codex ]; then
+    # Driver-side fan-out: one Codex session per ticket, each scoped to exactly one id.
+    AF_WORKER_SESSIONS=""; ok_ids=""
+    for wid in $@; do
+      wsess="${SESSION}-${wid}"
+      if af_in_list "$wid" "$AF_CARRY_IDS"; then AF_WORKER_SESSIONS="$AF_WORKER_SESSIONS $wsess"; continue; fi
+      af_launch_agent "$wsess" "$(af_worker_prompt "$wid")"
+      AF_WORKER_SESSIONS="$AF_WORKER_SESSIONS $wsess"
+    done
+    _carried="$AF_CARRY_IDS"; AF_CARRY_IDS=""; AF_CARRY_SESSIONS=""   # carried workers are now this batch's own
+    for wid in $@; do
+      wsess="${SESSION}-${wid}"
+      # A carried session is mid-build, so its pane will never show the fresh-REPL ready marker;
+      # it is already proven live (it was waited on when it was launched).
+      if af_in_list "$wid" "$_carried"; then ok_ids="$ok_ids $wid"; continue; fi
+      if af_wait_ready "$wsess" $((READY_POLL_MAX * 3)); then ok_ids="$ok_ids $wid"
+      else
+        say "WARNING: worker session for $wid never signalled ready after $((READY_POLL_MAX*6))s — killing it; $wid stays unclaimed for the next pass"
+        tmux kill-session -t "$wsess" 2>/dev/null || true
+        AF_WORKER_SESSIONS="$(printf '%s' "$AF_WORKER_SESSIONS" | sed "s/ $wsess\b//")"
+      fi
+    done
+    if [ -z "${ok_ids// /}" ]; then say "FATAL: no worker session came up for round #$round — nothing dispatched"; continue; fi
+    set -- $ok_ids; size=$#; ids_csv=$(printf '%s' "$*" | tr ' ' ',')
+    say "submitted round #$round as $size parallel Codex session(s): $ids_csv"
+  else
+  AF_WORKER_SESSIONS="$SESSION"
   af_launch_agent "$SESSION" "$round_prompt"
   # Cold starts on a loaded box exceed the old 80s cap (measured: round #1 of taolu-coach), so
   # poll 3x longer — and if the pane NEVER signals ready there is NO AGENT in it, so sending is
@@ -4531,6 +4781,7 @@ PREEXISTING_RULE=" ONE MORE RULE, and it is what stops the ticket gate contradic
     continue
   fi
   say "submitted round #$round with $size ticket(s), waiting for the batch to finish or stall"
+  fi
 
   # Wait for: every batch ticket to leave the open set (success), context exhaustion, auth error,
   # the session to die, OR the pane going completely unchanged for STALL_POLLS polls in a row (a
@@ -4549,6 +4800,7 @@ PREEXISTING_RULE=" ONE MORE RULE, and it is what stops the ticket gate contradic
   deadline=$(( ${AF_ROUND_DEADLINE_S:-3600} + (size - 1) * 1200 ))
   ticket_deadline=${AF_TICKET_DEADLINE_S:-7200}
   ticket_wall_clock_hit=0
+  ticket_deadline_warned=0
   factory_tree_violation=0
   # GRACE: the deadline is the backstop that ends a wedged round, but fired blind it also
   # guillotines a healthy endgame — R38 (2026-08-10) was 4 graded passes in with 2 stylistic
@@ -4567,6 +4819,9 @@ PREEXISTING_RULE=" ONE MORE RULE, and it is what stops the ticket gate contradic
   # is now an independent liveness signal in Praxis, the batch's open count.
   stall_polls=$STALL_POLLS
   [ "$size" -gt 1 ] && stall_polls=$((STALL_POLLS * 2))
+  # Liveness on a parallel round comes from Praxis (batch open count), so a still pane only needs a
+  # short window; AF_PARALLEL_STALL_S bounds it (owner: 15 min on the laptop, not 30).
+  [ "$size" -gt 1 ] && [ -n "${AF_PARALLEL_STALL_S:-}" ] && stall_polls=$(( AF_PARALLEL_STALL_S / 30 ))
   waited=0
   same_count=0
   last_hash=""
@@ -4597,15 +4852,17 @@ PREEXISTING_RULE=" ONE MORE RULE, and it is what stops the ticket gate contradic
     open=$(praxis_q batch_open "$@") || open=1
     open=${open:-1}
     if [ "$open" = "0" ]; then say "round #$round complete — all $size ticket(s) finished, blocked, or parked on manual sign-off"; break; fi
-    if [ "$waited" -ge "$ticket_deadline" ]; then
+    [ "$open" -lt "$size" ] 2>/dev/null && af_rolling_refill "$open"
+    if [ "$waited" -ge "$ticket_deadline" ] && [ "$ticket_deadline_warned" = 0 ]; then
       hb_open=$(praxis_q batch_open_ids "$@") || hb_open="$ids_csv"
       if [ "${AF_TICKET_DEADLINE_ACTION:-halt}" = "warn" ]; then
-        say "TICKET WALL CLOCK EXCEEDED after ${ticket_deadline}s (AF_TICKET_DEADLINE_ACTION=warn) — ending this round and CONTINUING the run; the open ticket's work is preserved and the next round resumes it. Still open: ${hb_open:-$ids_csv}"
+        say "TICKET WALL CLOCK EXCEEDED after ${ticket_deadline}s (AF_TICKET_DEADLINE_ACTION=warn) — continuing the current workers; stall detection remains active. Still open: ${hb_open:-$ids_csv}"
+        ticket_deadline_warned=1
       else
         say "TICKET WALL CLOCK EXCEEDED after ${ticket_deadline}s — halting this run, not dispatching another round. Still open: ${hb_open:-$ids_csv}"
+        ticket_wall_clock_hit=1
+        break
       fi
-      ticket_wall_clock_hit=1
-      break
     fi
     # Neither the finished count NOR the batch's open count moved? Say so out loud, on an interval,
     # so a round that is asleep reads differently from a round that is working.
@@ -4614,7 +4871,7 @@ PREEXISTING_RULE=" ONE MORE RULE, and it is what stops the ticket gate contradic
     # cannot answer, because an unanswerable question must widen the report, never narrow it.
     hb_open=$(praxis_q batch_open_ids "$@") || hb_open=""
     af_round_heartbeat "$round" "$now/$open" "$(printf '%s' "${hb_open:-$ids_csv}" | tr ' ' ',')"
-    pane=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || echo "")
+    pane=$(af_sessions_pane)
     # Retain the last live frame. Three rounds died as a bare "session gone" with the pane already
     # destroyed, so the reason was unrecoverable each time and the same round was retried blind.
     af_has "$pane" "." && lastpane="$pane"
@@ -4625,7 +4882,7 @@ PREEXISTING_RULE=" ONE MORE RULE, and it is what stops the ticket gate contradic
     # 22:39:27, while the transcript shows the session still processing a task-notification at that
     # exact second, with both workers alive. Rounds scored zero because the driver murdered them.
     # `tmux has-session` is the authoritative test, so ask it instead of inferring from pixels.
-    if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+    if ! af_any_session_alive; then
       say "session gone (confirmed via has-session), ending wait"
       if [ -n "${lastpane:-}" ]; then
         say "--- last build pane before it died ---"
@@ -4703,7 +4960,7 @@ PREEXISTING_RULE=" ONE MORE RULE, and it is what stops the ticket gate contradic
       # STALL_POLLS' own comment states the invariant this violates: it must stay
       # ABOVE the longest tool timeout the agent uses. Rather than guess that number,
       # ask the OS whether real work is still happening underneath the quiet pane.
-      if [ "$same_count" -ge "$stall_polls" ] && verify_children_busy "$SESSION"; then
+      if [ "$same_count" -ge "$stall_polls" ] && af_any_children_busy; then
         say "build pane still for $((same_count*30/60))min but a child process is live (long tool call) — not frozen, still waiting"
         same_count=0
       fi
@@ -4715,9 +4972,14 @@ PREEXISTING_RULE=" ONE MORE RULE, and it is what stops the ticket gate contradic
       same_count=0
       last_hash="$pane_hash"
     fi
-    if [ "$waited" -ge "$deadline" ] && [ "$grace_spent" -lt "$grace_max" ] && verify_children_busy "$SESSION"; then
-      deadline=$((deadline + grace_step)); grace_spent=$((grace_spent + grace_step))
-      say "round #$round deadline reached but a child process is live — extending by $((grace_step/60))min (grace used $((grace_spent/60))/$((grace_max/60))min)"
+    if [ "$waited" -ge "$deadline" ]; then
+      pane_recent=0; child_busy=0
+      [ -n "$last_hash" ] && [ "$same_count" -lt "$stall_polls" ] && af_any_session_alive && pane_recent=1
+      af_any_children_busy && child_busy=1
+      if af_round_can_extend "${AF_TICKET_DEADLINE_ACTION:-halt}" "$grace_spent" "$grace_max" "$pane_recent" "$child_busy"; then
+        deadline=$((deadline + grace_step)); grace_spent=$((grace_spent + grace_step))
+        say "round #$round deadline reached with worker activity — extending by $((grace_step/60))min (action=${AF_TICKET_DEADLINE_ACTION:-halt}, grace used $((grace_spent/60))min)"
+      fi
     fi
   done
   [ "$waited" -ge "$deadline" ] && say "round #$round timed out after $((waited/60))min with $(batch_open "$@") ticket(s) still open"
@@ -4737,13 +4999,17 @@ PREEXISTING_RULE=" ONE MORE RULE, and it is what stops the ticket gate contradic
   # loop. That is exactly how both project loops died on 2026-07-28 — each time right
   # after "committed WIP", never reaching "restarting fresh", leaving the project dead
   # until noticed by hand. An absent pane is a NORMAL state here, not an error.
-  pane_pid=$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1 || true)
-  tmux kill-session -t "$SESSION" 2>/dev/null || true
-  [ -n "${pane_pid:-}" ] && pkill -P "$pane_pid" 2>/dev/null || true
+  # AF_ROLLING: the sessions in AF_WORKER_SESSIONS belong to THIS batch only; carried next-batch
+  # workers live in AF_CARRY_SESSIONS and survive the boundary.
+  af_kill_worker_sessions
+  AF_WORKER_SESSIONS=""
   sleep 3
+  af_wait_verify
+  export AF_CARRY_IDS   # sweep_worktrees must not purge a carried worker's tree
   if [ "$factory_tree_violation" = "1" ]; then
     af_remove_clean_factory_nested_worktrees
     say "HALTING: a worker created a worktree inside the factory checkout; clean spent trees were removed and no successor round will be dispatched."
+    [ "${AF_NEVER_STOP:-0}" = "1" ] && { say "AF_NEVER_STOP=1: continuing to the next round anyway"; continue; }
     exit 11
   fi
   # Integrate FIRST, then sweep: the sweep only reaps worktrees whose branch is already an ancestor
@@ -4810,7 +5076,7 @@ PREEXISTING_RULE=" ONE MORE RULE, and it is what stops the ticket gate contradic
     say "HALTING: Praxis unreachable after round #$round — cannot tell what landed and therefore cannot prove whether the merged tree requires verification. No successor round will be dispatched on an unproven tree. Retry the loop after Praxis recovers."
     exit 9
   fi
-  if [ "$after" -gt "$before" ]; then
+  if [ "$after" -gt "$before" ] || { [ "${AF_ROLLING:-0}" = "1" ] && [ "$(git -C "$WT" rev-parse HEAD 2>/dev/null)" != "${AF_PREMERGE_SHA:-}" ]; }; then
     fruitless=0
     # Verify the MERGE, not the tickets — they were each proven alone, in a worktree that no longer
     # exists. Runs only when something actually landed, and only after the build session is dead so
@@ -4825,7 +5091,12 @@ PREEXISTING_RULE=" ONE MORE RULE, and it is what stops the ticket gate contradic
     # lint run NOWHERE for that ticket. The cross-ticket lenses are trivially satisfied when there is
     # only one ticket -- the gates are not, and they are now this stage's job alone.
     # shellcheck disable=SC2046  # deliberate word-split: ids are single tokens
-    verify_round "$round" $(printf '%s\n' "$@" $landed_ids | sort -u | tr '\n' ' ')
+    if [ "${AF_ROLLING:-0}" = "1" ]; then
+      ( exec 2>>"$AF_STATE_DIR/af-verify-trace-$PROJECT.log"; set -x; trap 'say "BACKGROUND VERIFICATION DIED at line $LINENO: $BASH_COMMAND (exit $?)"' ERR; trap 'say "background verification subshell EXIT status $?"' EXIT; verify_round "$round" $(printf '%s\n' "$@" $landed_ids | sort -u | tr '\n' ' '); say "round #$round background verification exited $?" ) &
+      AF_VERIFY_PID=$!; say "round #$round verification running in the BACKGROUND (pid $AF_VERIFY_PID); carried workers keep building meanwhile"
+    else
+      verify_round "$round" $(printf '%s\n' "$@" $landed_ids | sort -u | tr '\n' ' ')
+    fi
   else
     fruitless=$((${fruitless:-0} + 1))
     say "round #$round finished ZERO tickets ($fruitless in a row)"

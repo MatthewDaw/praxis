@@ -59,7 +59,7 @@ def test_a_merge_commit_or_two_tickets_is_not(tmp_path: Path) -> None:
 
 
 def test_the_verifier_is_told_to_skip_only_on_a_fast_forward() -> None:
-    assert "Tickets just merged: $ids_csv.${scope_note:-}${ff_note:-} Each was built" in SRC
+    assert "Tickets just merged: $ids_csv.${scope_note:-}${ff_note:-}" in SRC
     assert "if af_round_is_fast_forward \"$premerge\" \"$@\"; then" in SRC
     assert "ran_at LATER than this tip's commit time" in SRC
     # The skip covers ONLY gates the worker ran: a pinned set follows tags, not touched code (mvpvue T06).
@@ -74,5 +74,77 @@ def test_workers_run_final_checks_on_a_clean_checkout() -> None:
 
 
 def test_the_wall_clock_only_halts_when_not_set_to_warn() -> None:
-    assert 'if [ "$ticket_wall_clock_hit" = "1" ] && [ "${AF_TICKET_DEADLINE_ACTION:-halt}" != "warn" ]; then' in SRC
-    assert "(AF_TICKET_DEADLINE_ACTION=warn) — ending this round and CONTINUING the run" in SRC
+    assert 'if [ "$ticket_wall_clock_hit" = "1" ] && [ "${AF_TICKET_DEADLINE_ACTION:-halt}" != "warn" ]' in SRC
+    start = SRC.index('    if [ "$waited" -ge "$ticket_deadline" ]')
+    end = SRC.index('    # Neither the finished count', start)
+    block = SRC[start:end]
+    for action, expected in [("warn", "continued:0:1"), ("halt", "stopped:1:0")]:
+        program = "\n".join([
+            "set -eu", "waited=120; ticket_deadline=60; ticket_deadline_warned=0",
+            "ticket_wall_clock_hit=0; ids_csv=T01", "praxis_q(){ echo T01; }",
+            "say(){ :; }", "AF_TICKET_DEADLINE_ACTION=" + action,
+            "result=stopped", "for poll in 1 2; do", block,
+            "result=continued", "done",
+            'echo "$result:$ticket_wall_clock_hit:$ticket_deadline_warned"',
+        ])
+        result = subprocess.run(["bash", "-c", program], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected
+
+
+def test_active_round_extends_but_idle_or_hard_capped_round_does_not() -> None:
+    cases = [
+        ("warn 3600 2700 1 0", True),   # active agent, no tool child
+        ("warn 3600 2700 0 1", True),   # quiet pane, long-running tool
+        ("warn 3600 2700 0 0", False),  # no activity: never extend
+        ("halt 2700 2700 1 1", False),  # explicit hard limit
+        ("halt 0 2700 0 1", True),
+    ]
+    for args, expected in cases:
+        result = subprocess.run(
+            ["bash", "-c", _function("af_round_can_extend") + "\naf_round_can_extend " + args],
+            capture_output=True, text=True,
+        )
+        assert (result.returncode == 0) == expected, args
+
+
+def test_solo_codex_worker_has_no_polling_coordinator() -> None:
+    program = '\n'.join([
+        'PROJECT=demo; AF_WORKTREE_ROOT=/tmp/workers; INTEGRATION_REF=build',
+        'AF_FACTORY_CHECKOUT=/tmp/factory; PY=python; SWEEP_AMENDMENT=" gates"',
+        'PREEXISTING_RULE=" baseline"; SERVICES=" services"',
+        _function('af_worker_prompt'), 'af_worker_prompt R001',
+    ])
+    result = subprocess.run(['bash', '-c', program], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert 'build exactly this ONE ticket yourself, inline' in result.stdout
+    assert 'FROM build' in result.stdout
+    assert ' gates baseline services' in result.stdout
+    assert 'HOLD the turn open by polling' not in result.stdout
+    assert 'spawn ONE worktree-isolated subagent' not in result.stdout
+    assert 'if [ "$BACKEND" = codex ]; then\n    # Driver-side fan-out' in SRC
+
+
+def test_fast_lane_preserves_dependents_required_checks_and_soft_budget() -> None:
+    assert 'changed modules AND transitive callers/dependents' in SRC
+    assert 'no hard cutoff and no automatic pass for an unfinished check' in SRC
+    assert 'explicitly pinned checks still run here' in SRC
+    assert 'Hard wall budget:' not in SRC
+    assert 'phase-gate lookup unavailable; using full validation' in SRC
+
+
+def test_advisory_dependencies_are_independent_of_other_never_stop_switches() -> None:
+    for advisory, expected in [('1', 0), ('0', 1)]:
+        program = 'AF_NEVER_STOP=0; AF_DEPENDENCIES_ADVISORY=' + advisory + '\n' + _function('af_dependencies_advisory') + '\naf_dependencies_advisory'
+        result = subprocess.run(['bash', '-c', program], capture_output=True, text=True)
+        assert result.returncode == expected
+
+
+def test_native_worker_heartbeat_samples_real_sessions_instead_of_absent_coordinator() -> None:
+    program = '\n'.join([
+        'worker_cpu(){ case "$1" in one) echo 2;; two) echo 3;; esac; }',
+        _function('af_hb_cpu_sample'), 'af_hb_cpu_sample "one two"',
+    ])
+    result = subprocess.run(['bash', '-c', program], capture_output=True, text=True, check=True)
+    assert result.stdout == '5'
+    assert 'sess="${AF_HB_SESSION:-${AF_WORKER_SESSIONS:-${SESSION:-}}}"' in SRC

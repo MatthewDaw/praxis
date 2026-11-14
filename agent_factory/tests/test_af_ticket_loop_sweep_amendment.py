@@ -109,11 +109,13 @@ def test_the_wide_amendment_never_weakens_the_per_ticket_gate():
 def test_the_prompt_interpolates_the_selected_text():
     """A variable that never reaches the prompt would make all of the above decorative."""
     src = SCRIPT.read_text()
-    prompt = next(line for line in src.splitlines() if line.strip().startswith("round_prompt="))
-    assert "$SWEEP_AMENDMENT" in prompt
-    # and exactly once, so a stale second copy cannot contradict the chosen one
-    assert prompt.count("$SWEEP_AMENDMENT") == 1
-    assert "ONE deliberate amendment" not in prompt, "the literal must live only in the selector"
+    builder = next(line for line in src.splitlines() if line.startswith("af_round_prompt(){"))
+    script = 'SWEEP_AMENDMENT=SELECTED_AMENDMENT_MARKER\n' + builder + '\naf_round_prompt R001 1'
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
+    # Execute the real builder: delegation through a function must still transmit
+    # exactly the selected amendment, without a stale literal second copy.
+    assert result.stdout.count("SELECTED_AMENDMENT_MARKER") == 1
+    assert "ONE deliberate amendment" not in result.stdout
 
 
 def test_the_selector_runs_before_the_prompt_is_built():

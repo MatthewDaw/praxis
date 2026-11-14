@@ -1367,3 +1367,11 @@ any other — external signal, recorded on the ticket, fail-closed.
 - **Never** make the WORK-review advisory-only or self-reviewed; never pass on a missing ce panel (record
   no panel-ran episode, surface remediation); never skip the panel silently — every skip records a reason
   as a Praxis episode.
+
+## Efficient unattended workflow
+
+For the owner's unattended builds set `AF_DEPENDENCIES_ADVISORY=1` and `AF_FAST_VERIFY=1`. Dependency-ready tickets start first, then resource-admitted open work may fill spare slots even when prerequisites are blocked. This does not authorize missing interfaces, fabricated behavior, or green checks over unimplemented requirements. Codex runs one direct worker per ticket, including single-ticket frontiers; the driver schedules and integrates them. No polling coordinator is needed. Parallelism remains bounded by free memory and CPU admission.
+
+Target 5–10 minutes of normal validation feedback, with no hard cutoff. During edits run the failing acceptance case, changed-module tests and transitive callers/dependents, including runtime authorization and isolation checks that static imports cannot discover. Run required final checks once on the committed clean tree. Fail fast, repair the observed error, and reuse baseline evidence only when revision, command and fixture/toolchain context match. Do not add repeated whole-package sweeps merely to collect timing or invent worker pins for every repository-wide command. Authored binary checks remain mandatory; revise their contracts explicitly when changing scope.
+
+The fast integration lane preserves required pinned acceptance and risk-specific checks. Full integration/build/release suites run at phase gates. An unknown phase-gate classification conservatively selects full validation. Neither an incomplete fast run nor a matching baseline first failure proves a whole-suite pass. Record commands, durations, revisions, fixtures and remaining failures so the next worker resumes evidence rather than recreating it.
