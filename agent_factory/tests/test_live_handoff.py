@@ -96,3 +96,9 @@ printf '%s|%s|%s' "$AF_CARRY_IDS" "$AF_CARRY_SESSIONS" "$AF_ROLLING" > "$AF_STAT
     assert (state_dir/'adopted').read_text() == 'R001 R003|af-example-R001 af-example-R003|1'
     assert not path.exists()
     assert 'preserving live worker scopes' in run.stderr
+
+
+def test_driver_applies_handoff_after_project_settings_exports():
+    driver = (SCRIPT.parent/'af-ticket-loop.sh').read_text()
+    settings = driver.index("d = json.load(open('$WT/.claude/settings.local.json'))['env']")
+    assert driver.index('af_live_handoff.py" consume') > settings

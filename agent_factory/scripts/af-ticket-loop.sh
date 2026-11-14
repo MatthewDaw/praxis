@@ -1257,10 +1257,6 @@ af_resource_cap(){
 # next integrate waits for that verification first, so the verifier never has the tree change under
 # it. The ids/sessions of the batch being waited on stay in "$@"/AF_WORKER_SESSIONS exactly as before.
 AF_CARRY_IDS=""; AF_CARRY_SESSIONS=""; AF_VERIFY_PID=""
-# Only a validated, private, one-shot operator handoff can adopt existing workers.
-_af_handoff=$("$PY" "$(dirname "${BASH_SOURCE[0]}")/af_live_handoff.py" consume) || exit 125
-[ -z "$_af_handoff" ] || eval "$_af_handoff"
-unset _af_handoff
 af_in_list(){ case " $2 " in *" $1 "*) return 0;; esac; return 1; }
 af_count(){ set -- $1; echo $#; }
 af_rolling_refill(){   # $1 = open count of the current batch; launches next-batch workers into free slots
@@ -1313,6 +1309,11 @@ for k, v in d.items():
 open('$AF_STATE_DIR/af-agent-${PROJECT}.env', 'w').write('\\n'.join(lines) + '\\n')
 print('\\n'.join(lines))
 ")"
+
+# Only a validated, private, one-shot operator handoff can adopt existing workers.
+_af_handoff=$("$PY" "$(dirname "${BASH_SOURCE[0]}")/af_live_handoff.py" consume) || exit 125
+[ -z "$_af_handoff" ] || eval "$_af_handoff"
+unset _af_handoff
 
 say(){ echo "[$(date -u +%H:%M:%S)] $*" | tee -a "$LOG"; }
 
