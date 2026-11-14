@@ -448,3 +448,13 @@ that does not pass `--model`. Change both, or expect them to disagree.
 - Never kill an existing loop session without asking.
 - Never use `/workspace/af-queue.sh` for a single project — it is the sequential multi-project driver.
 - Never push from the box on the user's behalf; the loop's own prompt already forbids it.
+
+## Durable recovery (required for unattended runs)
+
+Launch the driver through the shipped `agent_factory/scripts/af-supervise.sh` wrapper, inside the project's existing tmux or systemd host. The wrapper retries nonzero exits with backoff, retains pending verification, exits on successful drain, and respects an explicit operator stop. Never use a blanket process killer or another project's service. Refresh `af-ticket-loop.sh`, `af-recovery.sh`, and `af-supervise.sh` together; a driver-only copy is incomplete.
+
+For a systemd-managed job use `Restart=on-failure`, `RestartSec=30s`, and a project-owned resource slice. Enable its user unit for host recovery and verify user-manager/host keepalive for that execution host. Intentional `systemctl stop` must stay stopped; a successful completed build must not be relaunched. The supervisor is the shipped implementation, replacing the earlier instruction to rely on the watch loop alone.
+
+The driver writes an atomic `af-pending-verification-<project>` checkpoint before verifying a merged tree. This is local recovery intent, not a ticket status or a fabricated check result; Praxis remains authoritative for ticket/check outcomes. Restart replays that checkpoint on the exact recorded integration commit before new dispatch. A missing/failed verdict retains it, and only coherent completed verification removes it. Never remove it to get a stalled run moving. An altered integration HEAD requires reconciliation rather than pretending the checkpoint covered a different tree.
+
+Verification extends its advisory wall time while the verifier or a real test child is active. A CLI that has completed its turn without a verdict is recovered immediately instead of sitting at an idle prompt. Record command durations and concrete progress; an active service or fresh lease alone does not prove progress. Use failure-injection tests in `tests/test_runner_recovery.py` when changing this contract.

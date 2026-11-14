@@ -621,6 +621,7 @@ fi
 #   AF_STATE_DIR   logs + verdict sentinels         (default: the parent of the target worktree)
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 AF_PLUGIN_DIR="${AF_PLUGIN_DIR:-$(dirname "$(dirname "$SELF")")}"
+source "$(dirname "$SELF")/af-recovery.sh"
 AF_REPO="${AF_REPO:-$(dirname "$AF_PLUGIN_DIR")}"
 
 # --resolve-orphans is a MODE flag, not the project: shift it off so the positional parsing below
@@ -3539,6 +3540,7 @@ verify_round(){   # $1 = round number, $2.. = the round's ticket ids
   # fall back to the merge-base of this branch and the round's merges, which is the same tree.
   local premerge="${AF_PREMERGE_SHA:-}"
   [ -n "$premerge" ] || premerge=$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo "HEAD")
+  af_checkpoint_verification "$premerge" "$rnd" "$@"
   # The repo's DEFAULT branch, which keeps moving while a build runs. Changes that arrive from it
   # are not this round's work and no ticket may be regressed for them -- see the rule in the prompt.
   local basebr; basebr=$(cd "$WT" && af_base_ref 2>/dev/null || true)
@@ -3604,7 +3606,8 @@ PYEOF
   say "round #$rnd: post-merge verification dispatched over $ids_csv"
 
   local vwaited=0 vstall=0 vhash="" vlast="" vlastpane=""
-  while [ "$vwaited" -lt "${AF_VERIFY_TIMEOUT_S:-2700}" ]; do
+  local vdeadline=${AF_VERIFY_TIMEOUT_S:-2700} vbusy=0
+  while [ "$vwaited" -lt "$vdeadline" ]; do
     sleep 30; vwaited=$((vwaited+30))
     [ -f "$VERDICT" ] && break
     pane=$(tmux capture-pane -t "$vsession" -p 2>/dev/null || echo "")
@@ -3614,6 +3617,10 @@ PYEOF
     af_has "$pane" "." && vlastpane="$pane"
     # Same rule as the build wait: a blank frame is a redraw, not a death.
     if ! tmux has-session -t "$vsession" 2>/dev/null; then say "verify session gone before writing a verdict"; break; fi
+    if af_worker_turn_ended "$pane" && ! verify_children_busy "$vsession"; then
+      say "verifier returned to idle without a verdict; preserving checkpoint for recovery"
+      break
+    fi
     if af_ihas "$pane" "insufficient balance|quota exceeded|payment required|credit balance is too low|insufficient_quota|billing_(error|hard_limit)|billing (error|failure)|(http[ /]?|status[ :]?)402|402 payment required"; then
       say "BILLING FAILURE during verification — halting"; tmux kill-session -t "$vsession" 2>/dev/null || true; exit 3
     fi
@@ -3639,6 +3646,13 @@ PYEOF
       [ "$vstall" -ge "$STALL_POLLS" ] && { say "verify session frozen for $((STALL_POLLS*30/60))min — giving up on this round's verification"; break; }
     else
       vstall=0; vlast="$vhash"
+    fi
+    if [ "$vwaited" -ge "$vdeadline" ]; then
+      vbusy=0; verify_children_busy "$vsession" && vbusy=1
+      if af_verification_can_extend "$vstall" "$STALL_POLLS" "$vbusy"; then
+        vdeadline=$((vdeadline + ${AF_VERIFY_GRACE_S:-600}))
+        say "verification remains active after $((vwaited/60))min; extending without losing its evidence"
+      fi
     fi
   done
 
@@ -4197,6 +4211,7 @@ PYEOF
   fi
 
   rm -f "$VERDICT" "$FINDINGS"
+  af_clear_verification_checkpoint
   return 0
 }
 
@@ -4252,6 +4267,8 @@ else
   say "WARNING: could not read this project's ticket ids at startup — branch OWNERSHIP will answer"
   say "  'not ours' until the first round integrates, so an early exit cannot clear a straggler."
 fi
+
+af_resume_verification
 
 round=0
 while :; do
@@ -4614,6 +4631,10 @@ PREEXISTING_RULE=" ONE MORE RULE, and it is what stops the ticket gate contradic
         printf '%s\n' "$lastpane" | grep -vE '^[[:space:]]*$' | tail -20 | sed 's/^/    /' | tee -a "$LOG"
         say "--- end build pane ---"
       fi
+      break
+    fi
+    if af_all_worker_turns_ended; then
+      say "all workers returned to idle without open tool calls; ending wait immediately"
       break
     fi
     if af_has "$pane" "100% context used"; then
