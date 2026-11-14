@@ -50,3 +50,20 @@ def test_public_or_invalid_notice_is_ignored(note):
 def test_hook_delivers_only_after_live_lease_guard_and_successful_heartbeat():
     code=(FILE.parent/'_ticket_state.py').read_text().split('def heartbeat(',1)[1].split('def uncommitted_changes(',1)[0]
     assert code.index('not _lease_live(meta)') < code.index('write_build_state') < code.index('deliver_once(cid, owner)')
+
+
+def test_library_import_heartbeat_resolves_notice_without_bare_hooks_path(tmp_path):
+    import os, subprocess, sys
+    root = FILE.parent.parent
+    code = """
+import sys
+sys.path[:0] = [sys.argv[1], sys.argv[1]+'/src']
+from hooks import _ticket_state as ts
+ts._meta=lambda *a,**k: {ts.M_CLAIM_OWNER:'worker'}
+ts._lease_live=lambda meta: True
+ts._praxis.write_build_state=lambda *a,**k: None
+assert ts.heartbeat('ticket','worker') is True
+"""
+    env={**os.environ,'AF_STATE_DIR':str(tmp_path),'FACTORY_PROJECT':'example'}
+    r=subprocess.run([sys.executable,'-I','-c',code,str(root)],env=env,cwd=tmp_path,capture_output=True,text=True,timeout=15)
+    assert r.returncode==0,r.stderr

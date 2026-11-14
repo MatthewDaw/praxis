@@ -1823,8 +1823,7 @@ def heartbeat(cid: str, owner: str, ref: Optional[tuple[str, str]] = None) -> bo
     # WHOLE-SET run marker in the same round-trip, and /heartbeat only knows about the per-ticket
     # lease. Splitting it would cost an extra call and let the two drift apart mid-run.
     _praxis.write_build_state(cid, patch, owner=owner, **_ref_kw(ref))
-    from _operator_notice import deliver_once
-    deliver_once(cid, owner)
+    _canonical_module("_operator_notice").deliver_once(cid, owner)
     return True
 
 
