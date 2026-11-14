@@ -3470,6 +3470,11 @@ af_assert_no_stragglers(){
 af_cleanup_on_exit(){
   local rc=$?
   set +e
+  if "$PY" "$(dirname "${BASH_SOURCE[0]}")/af_live_handoff.py" pending >/dev/null 2>&1; then
+    say "live scheduler handoff — preserving worker checkouts and resumable contexts"
+    af_release_worktree_lock
+    return "$rc"
+  fi
   if [ -n "${WT:-}" ] && [ -e "${WT}/.git" ]; then
     sweep_worktrees || true
     # No backoff inside a signal handler. reap_branches may need to regress a lying ticket, and

@@ -88,7 +88,7 @@ printf '%s|%s|%s' "$AF_CARRY_IDS" "$AF_CARRY_SESSIONS" "$AF_ROLLING" > "$AF_STAT
 ''')
     env = {**os.environ, 'PATH': str(bins) + os.pathsep + os.environ['PATH'],
         'AF_STATE_DIR': str(state_dir), 'FACTORY_PROJECT': 'example',
-        'AF_SERVICE_UNIT': 'example.service', 'AF_SUPERVISOR_RETRY_S': '1',
+        'AF_SERVICE_UNIT': 'example.service', 'AF_SUPERVISOR_RETRY_S': '300',
         'HANDOFF_SCRIPT': str(SCRIPT), 'HANDOFF_PYTHON': __import__('sys').executable}
     run = subprocess.run(['bash', str(scripts/'af-supervise.sh'), 'bash', str(driver)],
                          env=env, capture_output=True, text=True, timeout=10)

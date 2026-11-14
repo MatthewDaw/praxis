@@ -87,5 +87,7 @@ def consume(path=None):
 if __name__ == '__main__':
     if sys.argv[1:] == ['consume']:
         print(consume())
+    elif sys.argv[1:] == ['pending']:
+        raise SystemExit(0 if read_valid(handoff_path()) is not None else 1)
     else:
-        raise SystemExit('usage: af_live_handoff.py consume')
+        raise SystemExit('usage: af_live_handoff.py consume|pending')
