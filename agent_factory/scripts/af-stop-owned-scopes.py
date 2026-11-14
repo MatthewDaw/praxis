@@ -3,7 +3,46 @@
 import os
 import subprocess
 import sys
+import re
 from pathlib import Path
+
+
+def preserve_active_workers(owner):
+    """Adopt live project workers on retries; explicit owner stops still reap them."""
+    project = os.environ.get('FACTORY_PROJECT')
+    state = os.environ.get('AF_STATE_DIR')
+    if not project or not state:
+        return False
+    if subprocess.run(['systemctl', '--user', 'is-active', '--quiet', owner], capture_output=True).returncode:
+        return False
+    prefix = os.environ.get('AF_SESSION_PREFIX') or 'af-' + Path.cwd().name
+    from af_live_handoff import prepare
+    import _praxis as p
+    try:
+        facts = p.facts_by(category='requirement', space=project, snapshot='prd-' + project)
+        states = {f.get('meta', {}).get('requirement_id'): f.get('meta', {}).get('build_state') for f in facts}
+    except Exception:
+        states = None  # A backend outage must not destroy an otherwise live conversation.
+    result = subprocess.run(['tmux', 'list-sessions', '-F', '#{session_name}'], capture_output=True, text=True)
+    ids, sessions = [], []
+    for session in result.stdout.splitlines():
+        if not session.startswith(prefix + '-'):
+            continue
+        ticket = session[len(prefix) + 1:]
+        if not re.fullmatch(r'[A-Za-z0-9_.-]+', ticket) or ticket in {'verify', 'resolve'}:
+            continue
+        if states is not None and states.get(ticket) not in {'incomplete', 'in_progress'}:
+            continue
+        prompt = Path(state) / ('af-' + session + '.prompt')
+        if not prompt.exists() or prompt.stat().st_uid != os.getuid() or prompt.stat().st_mode & 0o077:
+            continue
+        command = subprocess.run(['tmux', 'display-message', '-p', '-t', session,
+                                  '#{pane_current_command}'], capture_output=True, text=True).stdout.strip()
+        if command not in {'claude', 'codex'}:
+            continue
+        ids.append(ticket)
+        sessions.append(session)
+    return prepare(ids, sessions) if ids else False
 
 
 def main():
@@ -15,6 +54,10 @@ def main():
         return 0
     owner = os.environ.get('AF_SERVICE_UNIT')
     if not owner:
+        return 0
+    if preserve_active_workers(owner):
+        skip_cleanup_once()
+        print('[recovery] active unfinished workers preserved for immediate scheduler adoption', file=sys.stderr)
         return 0
     result = subprocess.run(['systemctl', '--user', 'list-units', '--type=scope',
                              '--plain', '--no-legend', '--no-pager'], capture_output=True, text=True, check=True)

@@ -84,6 +84,31 @@ def consume(path=None):
     return '\n'.join(f'export {key}={shlex.quote(value)}' for key, value in values.items())
 
 
+def prepare(ids, sessions):
+    """Persist a bounded adoption record before a failed driver loses its workers."""
+    if not ids or len(ids) != len(sessions):
+        return False
+    path = handoff_path()
+    if read_valid(path) is not None:
+        return True
+    data = {'project': os.environ.get('FACTORY_PROJECT', ''),
+            'owner_unit': os.environ.get('AF_SERVICE_UNIT', ''),
+            'ids': list(ids), 'sessions': list(sessions),
+            'expires_at': time.time() + 580, 'cleanup_skipped': False}
+    temp = path.with_name(path.name + f'.prepare-{os.getpid()}')
+    fd = os.open(temp, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(data, stream)
+        temp.chmod(0o600)
+        if read_valid(temp) is None:
+            return False
+        temp.replace(path)
+        return True
+    finally:
+        temp.unlink(missing_ok=True)
+
+
 if __name__ == '__main__':
     if sys.argv[1:] == ['consume']:
         print(consume())
