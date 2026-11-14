@@ -1567,6 +1567,11 @@ def record_validation_pass(cid: str, validation_id: str, passed: bool,
     for entry in pinned:
         eid = entry.get("validation_id") or entry.get("check_id")
         if str(eid) == str(validation_id):
+            if passed and entry.get("kind") == "graded" and effective_source == WORKER_PASS_SOURCE:
+                raise ValueError(
+                    "A graded validation requires its external judge verdict; "
+                    "worker type/lint or self-assessment cannot record that pass"
+                )
             entry["passed"] = bool(passed)
             entry["ran_at"] = ran_at
             entry["source"] = effective_source
