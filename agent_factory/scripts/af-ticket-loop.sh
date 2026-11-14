@@ -1257,6 +1257,10 @@ af_resource_cap(){
 # next integrate waits for that verification first, so the verifier never has the tree change under
 # it. The ids/sessions of the batch being waited on stay in "$@"/AF_WORKER_SESSIONS exactly as before.
 AF_CARRY_IDS=""; AF_CARRY_SESSIONS=""; AF_VERIFY_PID=""
+# Only a validated, private, one-shot operator handoff can adopt existing workers.
+_af_handoff=$("$PY" "$(dirname "${BASH_SOURCE[0]}")/af_live_handoff.py" consume) || exit 125
+[ -z "$_af_handoff" ] || eval "$_af_handoff"
+unset _af_handoff
 af_in_list(){ case " $2 " in *" $1 "*) return 0;; esac; return 1; }
 af_count(){ set -- $1; echo $#; }
 af_rolling_refill(){   # $1 = open count of the current batch; launches next-batch workers into free slots
@@ -2854,7 +2858,7 @@ sweep_worktrees(){
     local head; head=$(git -C "$path" rev-parse HEAD 2>/dev/null || echo "")
     if [ -n "${AF_CARRY_IDS// /}" ]; then
       local _br _cid _skip=0; _br=$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-      for _cid in $AF_CARRY_IDS; do case "$_br $path" in *"$_cid"*) _skip=1;; esac; done
+      for _cid in $AF_CARRY_IDS; do case "${_br,,} ${path,,}" in *"${_cid,,}"*) _skip=1;; esac; done
       [ "$_skip" = "1" ] && { say "worktree $path belongs to carried in-flight worker — kept"; kept=$((kept+1)); continue; }
     fi
     af_worktree_is_removable "$path" "$head" || continue

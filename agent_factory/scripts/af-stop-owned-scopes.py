@@ -3,9 +3,15 @@
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 
 def main():
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from af_live_handoff import skip_cleanup_once
+    if skip_cleanup_once():
+        print('[recovery] preserving live worker scopes for one scheduler handoff', file=sys.stderr)
+        return 0
     owner = os.environ.get('AF_SERVICE_UNIT')
     if not owner:
         return 0
