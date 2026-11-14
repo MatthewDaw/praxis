@@ -8,9 +8,10 @@ from pathlib import Path
 
 def main():
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from af_live_handoff import skip_cleanup_once
-    if skip_cleanup_once():
-        print('[recovery] preserving live worker scopes for one scheduler handoff', file=sys.stderr)
+    from af_live_handoff import handoff_path, read_valid, skip_cleanup_once
+    if read_valid(handoff_path()) is not None:
+        skip_cleanup_once()
+        print('[recovery] preserving live worker scopes while the validated scheduler handoff is pending', file=sys.stderr)
         return 0
     owner = os.environ.get('AF_SERVICE_UNIT')
     if not owner:
