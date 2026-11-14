@@ -89,3 +89,21 @@ def test_three_slot_profile_bounds_fourth_and_preserves_exclusive_gate(tmp_path)
         release(exclusive)
     finally:
         cleanup(*active, *[p for p in (fourth, exclusive) if p is not None])
+
+
+def test_queued_exclusive_is_not_starved_by_later_integrations(tmp_path):
+    active = start(tmp_path, integration=True, slots=3)
+    assert ready(active)
+    writer = start(tmp_path, integration=False)
+    assert not ready(writer, .2)
+    later = start(tmp_path, integration=True, slots=3)
+    try:
+        assert not ready(later, .2)
+        release(active)
+        assert ready(writer)
+        assert not ready(later, .15)
+        release(writer)
+        assert ready(later)
+        release(later)
+    finally:
+        cleanup(active, writer, later)
