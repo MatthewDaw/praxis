@@ -15,10 +15,11 @@ while :; do
   fi
   child=""
   python3 "$(dirname "$0")/af-stop-owned-scopes.py" || exit 125
-  [ "$result" -ne 0 ] || exit 0
   retry_delay=$delay
   if python3 "$(dirname "$0")/af_live_handoff.py" pending >/dev/null 2>&1; then
     retry_delay=1
+  else
+    [ "$result" -ne 0 ] || exit 0
   fi
   printf '[recovery] driver exited %s; retry in %ss; pending verification is retained\n' "$result" "$retry_delay" >&2
   sleep "$retry_delay" & child=$!

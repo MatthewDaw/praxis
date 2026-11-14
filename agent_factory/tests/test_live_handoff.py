@@ -64,7 +64,8 @@ def test_handoff_must_be_private_and_a_json_object(state):
     assert not handoff.skip_cleanup_once(state)
 
 
-def test_real_supervisor_retries_driver_and_adopts_same_sessions(tmp_path):
+@pytest.mark.parametrize("first_exit", [0, 9])
+def test_real_supervisor_retries_driver_and_adopts_same_sessions(tmp_path, first_exit):
     import os
     scripts = SCRIPT.parent
     state_dir = tmp_path / 'state'; state_dir.mkdir()
@@ -79,13 +80,13 @@ def test_real_supervisor_retries_driver_and_adopts_same_sessions(tmp_path):
     driver.write_text('''#!/bin/bash
 if [ ! -e "$AF_STATE_DIR/attempt" ]; then
   touch "$AF_STATE_DIR/attempt"
-  exit 9
+  exit FIRST_EXIT
 fi
 AF_CARRY_IDS=""; AF_CARRY_SESSIONS=""; AF_VERIFY_PID=""
 exports=$("$HANDOFF_PYTHON" "$HANDOFF_SCRIPT" consume) || exit 125
 eval "$exports"
 printf '%s|%s|%s' "$AF_CARRY_IDS" "$AF_CARRY_SESSIONS" "$AF_ROLLING" > "$AF_STATE_DIR/adopted"
-''')
+'''.replace('FIRST_EXIT',str(first_exit)))
     env = {**os.environ, 'PATH': str(bins) + os.pathsep + os.environ['PATH'],
         'AF_STATE_DIR': str(state_dir), 'FACTORY_PROJECT': 'example',
         'AF_SERVICE_UNIT': 'example.service', 'AF_SUPERVISOR_RETRY_S': '300',
