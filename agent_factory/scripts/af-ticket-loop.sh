@@ -4855,6 +4855,19 @@ af_round_prompt(){ local ids_csv="$1" size="$2"; printf '%s' "/af-build $PROJECT
     # and the pane-stillness check keep watching. This is the single poll that killed the run.
     now=$(praxis_q finished_count) || now=$done_seen
     now=${now:-$done_seen}
+    # Finished Codex CLIs retain large contexts until the whole round ends.
+    # Release only proven idle/unleased completions; preserve resumable sessions.
+    if [ "$BACKEND" = codex ] && [ "$now" -gt 0 ]; then
+      retire_now=$(date +%s)
+      if [ "$((retire_now - ${retire_last:-0}))" -ge 60 ]; then
+        retire_last=$retire_now
+        retire_helper="$(dirname "${BASH_SOURCE[0]}")/af_retire_finished.py"
+        if [ -f "$retire_helper" ]; then
+          "$PY" "$retire_helper" --project "${FACTORY_PROJECT:-$PROJECT}" \
+            --state-dir "$AF_STATE_DIR" >>"$LOG" 2>&1 || true
+        fi
+      fi
+    fi
     if [ "$now" -gt "$done_seen" ]; then
       say "round #$round progress: $((now - before))/$size finished"
       done_seen=$now
