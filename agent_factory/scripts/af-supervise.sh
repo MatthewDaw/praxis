@@ -8,8 +8,13 @@ trap stop TERM INT
 while :; do
   "$@" & child=$!
   wait "$child"; result=$?
-  if [ "$stopping" = 1 ]; then wait "$child" 2>/dev/null || true; exit 130; fi
+  if [ "$stopping" = 1 ]; then
+    wait "$child" 2>/dev/null || true
+    python3 "$(dirname "$0")/af-stop-owned-scopes.py" || exit 125
+    exit 130
+  fi
   child=""
+  python3 "$(dirname "$0")/af-stop-owned-scopes.py" || exit 125
   [ "$result" -ne 0 ] || exit 0
   printf '[recovery] driver exited %s; retry in %ss; pending verification is retained\n' "$result" "$delay" >&2
   sleep "$delay" & child=$!
