@@ -1,482 +1,124 @@
 ---
 name: af-build-remote-job
 description: >
-  Trigger af-build on the EC2 devbox for any Praxis project and return immediately. Resolve and
-  preflight the remote worktree, refresh the shipped driver, refuse to stomp a live loop, launch it
-  detached, verify startup, and report observe/stop commands. Use for a long build on the devbox,
-  not a local build; use af-build locally. Distinct from /af-build-remote-jobs, which builds the
-  box-service dispatch feature locally. Never waits for completion or pushes.
+  Start an unattended Praxis build on the remote laptop's Linux/WSL workspace and
+  return after confirming startup. Use the canonical managed runtime setup: native
+  Sonnet fan-out on the existing laptop login, project-owned resource limits and
+  supervision, rolling dispatch, affected-code validation, durable recovery and
+  twenty-minute timing observations. Resolve the worktree, org and ports; preserve
+  active jobs and immutable factory snapshots. Never push or wait for completion.
 ---
 
-This **triggers a build on the EC2 devbox** and returns —
-it does not build locally and does not wait for the run to finish. It works from ANY repo; the
-project argument decides what gets built, not the current directory.
+Use the canonical installer, not a custom supervisor, model proxy, node wrapper or
+one-off launch script. The implementation and configuration contract are in
+`../../docs/managed-runtime.md`; read that document from the same plugin source.
+All defaults below are per job, never machine-wide model or WSL settings.
 
-Do not confuse this with `/af-build-remote-jobs` (plural), a praxis-only alias that runs `af-build`
-**locally** against the ticket set building the box-service dispatch feature. The designed remote
-path (an MCP tool queues a job, a box service claims it) is **not wired**: `dispatch.dispatch_job`
-has no production caller, there is no `POST /jobs` route, and nothing calls `launch_job_session`.
-Only the read-side MCP tools (`praxis_list_jobs`, `praxis_get_job`, `praxis_job_activity`) exist.
-So this drives the SSH + tmux path that is how runs actually get started today.
+## Resolve the host and project
 
-## Box facts (verified 2026-08-13)
+The owner's remote build host is the Windows laptop reached with `ssh winlaptop`.
+SSH lands in Windows; execute Linux commands inside its WSL Ubuntu distribution.
+EC2 is retired. Do not start or stop another host or another project's services.
 
-| | |
-|---|---|
-| host | `ec2-user@52.22.249.49` |
-| key | `~/.ssh/praxis-devbox.pem` |
-| factory repo | `/workspace/praxis` (the loop script lives here regardless of target project) |
-| **plugin source** | `/workspace/praxis-plugin/agent_factory` — a SEPARATE shallow clone that the marketplace resolves to. **This is where SKILL.md and hooks load from.** |
-| ⚠ second checkout | `/workspace/af-praxis` is a SECOND checkout of the same repo, usually on a different branch. **Patching it does nothing at runtime** — see below. |
-| driver | `/workspace/praxis/agent_factory/scripts/af-ticket-loop.sh <project> <worktree> <pg> <redis|none> [max]` (ships with the plugin; all projects run this one file) |
-| tmux session | derived by the loop as `af-$(basename <worktree>)` |
-| loop log | `/workspace/af-ticket-loop.log` (plus the per-run log this command redirects to) |
-
-**The driver and the plugin now come from DIFFERENT clones, deliberately.** Before 2026-08-13 both
-resolved to `/workspace/praxis`, which meant refreshing the plugin required `git pull` on the very
-checkout whose `af-ticket-loop.sh` a live loop was mid-execution of — bash reads scripts
-incrementally, so that is a real hazard, and it made every plugin update wait for a build to drain.
-Splitting them means:
-
-- **`/workspace/praxis-plugin` is safe to pull at any time.** Nothing executes from it; it only gets
-  read at plugin-install time. This is the checkout to update when skills or hooks change.
-- **`/workspace/praxis` still owns the driver** and should only be pulled when no loop is running.
-- The cost is that they can drift, and refreshing one tells you nothing about the other. Step 5b
-  refreshes the driver; the plugin is refreshed separately (pull `praxis-plugin`, bump
-  `plugin.json`'s version, reinstall). **Check both when a change does not seem to take effect.**
-
-`/workspace/praxis-plugin/agent_factory/.env` holds the Praxis credentials and is gitignored, so a
-fresh clone will NOT have it. Copy it in, or every hook in every worker session loses its backend
-and the gates go inert rather than loud.
-
-Worktrees are per-project and each carries its own `.claude/settings.local.json`. Observed layout —
-resolve it, never assume it:
-
-| worktree | Praxis project | pg | redis |
-|---|---|---|---|
-| `/workspace/af-praxis` | (whatever its `FACTORY_PROJECT` says) | 5437 | 6382 |
-| `/workspace/appeal_engine-build` | `appeal_engine` | 5435 | none |
-| `/workspace/bestie` | `gss-prices-hardening` | 5434 | none |
-| `/workspace/sotos-build` | — | — | — |
-
-Prefer `af-ticket-loop.sh` over `/workspace/af-queue.sh`. The queue script keeps every ticket in ONE
-growing CLI session and has hit 100% context mid-build twice; the loop script runs one fresh session
-per BATCH with stall detection and is the maintained driver.
-
-**The loop is batch-parallel.** Each round it computes the dependency-ready frontier itself, caps it at
-`AF_BATCH_MAX` (default 4 on this four-physical-core EC2 host), and hands af-build that explicit id list as the run scope — so af-build fans
-the batch out across parallel per-ticket worktrees, the completeness gate releases the session when the
-batch is done, and the next round starts in fresh context. Tickets that depend on each other are never in
-the same batch.
-
-`AF_BATCH_MAX` is the host-scoped parallelism cap in this path. The driver exports the same value as
-`AF_MAX_CPU_PARALLEL` to af-build, so nothing widens the round underneath; neither variable is set by
-local af-build. The round
-fans out with `Agent` subagents, which carry no core-derived cap — the driver explicitly forbids the
-`Workflow` tool for exactly that reason, so the Workflow concurrency limit never applies here. (An
-earlier version of this line claimed concurrency was "additionally capped by the Workflow tool"; that
-was wrong, and it made small rounds look like a hard ceiling when they were only a default.) **DISK is
-the real ceiling**: each worker is a full checkout plus, where the project bootstraps per-worktree
-deps, a full dependency tree — so size `AF_BATCH_MAX` from the volume, not the core count.
-`AF_MIN_FREE_GB` (default 15) aborts a round that will not fit, but cannot reclaim disk spent
-mid-round. After every round — and on every abnormal exit, via the cleanup trap — the loop purges the
-round's worktrees unconditionally (the tree is scratch, the branch is the artifact) and then reaps the
-branches whose work has landed, ending with a `N branches reaped, M unmerged branches remain: <names>`
-line. An empty survivor list is the normal case; a named survivor is real orphaned work, and a ticket
-that reads `finished` while its commits sit unmerged fails the round and is regressed for rebuild.
-`AF_KEEP_BRANCHES=1` reports instead of reaping, for debugging a bad round.
-
-**Every parallel round is verified after it merges.** Each ticket's validations ran inside its own
-worktree, against a tree where its change was the only one present, so a batch of five produces five
-green claims about five trees that no longer exist and none about the merged result. After a round
-lands, a fresh session re-runs the whole-repo gates on the integrated tree and dispatches independent
-adversarial lenses over the combined diff — integration conflict, per-ticket acceptance re-run against
-the MERGED tree, test integrity — and regresses in Praxis any ticket whose work does not survive
-integration, so the next round rebuilds it. It builds nothing and pushes nothing. Single-ticket rounds
-are verified too, because workers no longer own the repo-wide sweep. `AF_VERIFY_TIMEOUT_S` bounds the
-session, default 2700. A round that produces no verdict halts; verification cannot be disabled or
-treated as a pass.
-
-## Box auth — set up or repair the Claude identity (do this BEFORE launching)
-
-The loop drives workers non-interactively under `--dangerously-skip-permissions`. If the box's
-Claude identity is missing, half-configured, or freshly re-logged-in, every round dies the same
-way: `FATAL: round #N pane never signalled ready after 240s — no agent in the session`, forever,
-while the loop process itself looks healthy. One farming_analysis run burned five rounds on this
-before anyone looked inside the pane. There are TWO identity models; pick ONE per project.
-
-### Model A — shared default identity (`~/.claude`), interactive login
-
-Use when the project can share the box's main account.
-
-1. Interactive login (ONLY the human can complete the browser step):
-   `ssh -i ~/.ssh/praxis-devbox.pem -t ec2-user@52.22.249.49 claude /login`
-   Open the printed URL, pick the intended account, paste the code back. This rewrites
-   `~/.claude/.credentials.json`.
-2. **A fresh login RESETS per-session acknowledgement UI.** Clear it so headless workers don't
-   stall on a dialog: in `~/.claude.json` set `hasCompletedOnboarding = true` and
-   `theme = "dark"` (login NULLS the theme, re-triggering the wizard), and
-   `bypassPermissionsModeAccepted = true`. The bypass acceptance is necessary but partially
-   TTY-gated — the step-3 smoke test is what actually proves it clear.
-3. Confirm which account is active (email only, no secrets):
-   `python3 -c "import json;print(json.load(open('/home/ec2-user/.claude.json'))['oauthAccount']['emailAddress'])"`
-4. Launch (step 6 below) WITHOUT any `CLAUDE_CONFIG_DIR` override.
-
-### Model B — isolated per-project identity (separate account, quota-isolated)
-
-Use when the project needs its OWN account so its usage never competes with the main account's
-quota (farming_analysis runs this way: `/home/ec2-user/.claude-farming`). Requires a genuinely
-DIFFERENT account — a scoped `CLAUDE_CONFIG_DIR` isolates the LOGIN, not the QUOTA; two tokens
-minted from one account still drain one pool.
-
-1. `mkdir -p /home/ec2-user/.claude-<project>` on the box.
-2. Mint a long-lived token UNDER that dir (interactive; the human signs in with the SEPARATE
-   account): `ssh -t ... 'CLAUDE_CONFIG_DIR=/home/ec2-user/.claude-<project> claude setup-token'`.
-   **The token prints exactly ONCE to stdout and is NOT stored automatically** — run it inside a
-   tmux session with `remain-on-exit on`, or tee stdout, or the token is lost and the OAuth code
-   (single-use) is burned with it.
-3. Store it in `/home/ec2-user/.claude-<project>/env`, chmod 600:
-   `export CLAUDE_CONFIG_DIR=/home/ec2-user/.claude-<project>` +
-   `export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat0...`
-4. **Interactive sessions ALSO need `.credentials.json` in that config dir** — `setup-token`
-   does not write it, and without it every worker session stops at a "Select login method"
-   dialog that `-p` probes never show. Construct it from the env token (shape:
-   `{"claudeAiOauth": {"accessToken": "<token>", "refreshToken": "", "expiresAt": <ms>,
-   "scopes": ["user:inference"], "subscriptionType": "max"}}`, chmod 600).
-5. Clear the dialogs in `/home/ec2-user/.claude-<project>/.claude.json`: the Model-A step-2
-   flags PLUS a trust entry per project root —
-   `projects["/workspace/<worktree>"] = {"hasTrustDialogAccepted": true}` (trust is per
-   project root; worktrees under it inherit). Also set
-   `permissions.defaultMode = "bypassPermissions"` in `<config-dir>/settings.json` so every
-   session on this identity runs bypass even if a launcher forgets the flag.
-6. Launch (step 6 below) with `source /home/ec2-user/.claude-<project>/env &&` prefixed.
-
-### The ONLY valid validation
-
-```bash
-ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
-  'source /home/ec2-user/.claude-<project>/env 2>/dev/null; \
-   timeout 25 claude -p "reply with the single word READY" --dangerously-skip-permissions'
-```
-
-Expect exactly `READY`. **A `-p` probe WITHOUT `--dangerously-skip-permissions` proves
-nothing** — print mode skips every onboarding dialog (theme, login method, folder trust,
-bypass acceptance), so it returns clean while interactive worker sessions still stall. The
-farming run's five dead rounds all happened after a plain `-p` probe had "verified" auth.
-
-### Gotchas learned the hard way
-
-- Copying a laptop's keychain credentials to the box works but binds the box to whatever account
-  the laptop uses AND shares one rolling quota window — near the cap, the loop dies with
-  `BILLING FAILURE` within ~90s of every launch. `/login` (A) or a dedicated token (B) instead.
-- After ANY re-login, re-run the READY smoke before launching — a reset dialog swallows the
-  loop's first `tmux send-keys` prompt and the session sits idle at an empty REPL.
-- The `FATAL: pane never signalled ready` signature = look INSIDE the pane
-  (`tmux capture-pane -t af-<worktree> -p`) — it is almost always one of the four dialogs above,
-  each fixable from config without another browser round-trip.
-
-## Steps
-
-**1. Resolve the project** from `$ARGUMENTS`. If absent, ask — a wrong name silently builds nothing.
-
-**2. Resolve the worktree ON THE BOX. Do not guess it** — the worktree name and the Praxis project
-name frequently differ (`bestie` builds `gss-prices-hardening`). If the user named one, use it.
-Otherwise find the worktree whose configured project matches, and its ports:
-
-```bash
-ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 "python3 - '<project>' <<'PY'
-import json,glob,re,sys
-want=sys.argv[1]
-for cfg in sorted(glob.glob('/workspace/*/.claude/settings.local.json')):
-    try: env=json.load(open(cfg))['env']
-    except Exception: continue
-    wt=cfg.split('/.claude/')[0]
-    url=next((env[k] for k in ('PRAXIS_DB_URL','POSTGRES_URL','DATABASE_URL','SCRAPER_DATABASE_URL') if k in env),'')
-    m=re.search(r'localhost:(\d+)',url or '')
-    r=re.search(r'localhost:(\d+)',env.get('REDIS_URL',''))
-    mark='  <== MATCH' if env.get('FACTORY_PROJECT')==want else ''
-    print(f\"{wt:34} project={env.get('FACTORY_PROJECT','?'):26} pg={m.group(1) if m else '?':6} redis={r.group(1) if r else 'none':6}{mark}\")
-PY"
-```
-
-Exactly one MATCH → use it. No match or several → show the table and ask which worktree to build in.
-A missing pg port is a stop, not a default: the loop passes it to the session as the DB it must use.
-
-**3. Preflight the ticket set** — do not start a multi-hour remote run against a finished or
-misnamed set. Run locally from any clone of praxis (or on the box against `/workspace/praxis`):
-
-```bash
-PRAXIS_ORG=praxis <praxis>/.venv/bin/python3 - <<'PY'
-import sys; sys.path[:0]=["<praxis>/agent_factory/src","<praxis>/agent_factory/hooks"]
-import _praxis
-p="<project>"
-f=_praxis.facts_by(category="requirement", space=p, snapshot=f"prd-{p}") or []
-c=[x for x in f if ((x.get("meta") or {}).get("build_state")) in ("incomplete","in_progress")]
-ck=_praxis.facts_by(category="check", space=p, snapshot="building-validation") or []
-print(f"{p}: {len(f)} requirements, {len(c)} claimable, {len(ck)} build-validation check(s)")
-PY
-```
-
-Zero claimable → STOP, nothing to do. Zero checks → WARN loudly before proceeding: every ticket
-would pin an empty check set and FINISH would self-certify.
-
-**4. Patch `FACTORY_PROJECT` in the chosen worktree.** REQUIRED, and the easiest thing to get wrong.
-`af-ticket-loop.sh` reads only `PRAXIS_ORG` / `PRAXIS_API_KEY` / `PRAXIS_API_BASE_URL` from that
-file — it does **not** set `FACTORY_PROJECT`. The completeness-gate hook resolves
-`prd-<FACTORY_PROJECT>` from the environment, so a value left from a previous run makes the gate
-resolve the wrong project and **go inert rather than loud** (the failure
-`knowledge/serve/dispatch_launch.py` warns about). Observed live: `/workspace/af-praxis` still read
-`af-build-remote-jobs` long after that project finished.
-
-```bash
-ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
-  "python3 - '<worktree>/.claude/settings.local.json' '<project>' <<'PY'
-import json,sys
-cfg,proj=sys.argv[1],sys.argv[2]
-d=json.load(open(cfg)); was=d['env'].get('FACTORY_PROJECT')
-d['env']['FACTORY_PROJECT']=proj
-d['env']['PRAXIS_MCP_CACHE']=f'/home/ec2-user/.praxis/af-{proj}.json'
-json.dump(d,open(cfg,'w'),indent=2)
-print('FACTORY_PROJECT', was, '->', proj)
-PY"
-```
-
-**5. Refuse to stomp a live run.** The loop's session name is `af-$(basename <worktree>)`. If it
-exists, a build is in flight — report it and ask before killing.
-
-```bash
-ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 'tmux ls 2>/dev/null || echo "(no sessions)"'
-```
-
-**5b. Refresh the driver.** The loop ships INSIDE the plugin at
-`agent_factory/scripts/af-ticket-loop.sh`, and every project runs that one file — never a copy. Pull
-the factory repo before launching so a months-old driver cannot silently drive a new run. This is not
-hypothetical: one project ran for weeks under its own supervisor against a stale copy of this script
-while the canonical one had been rewritten twice, and nothing surfaced the divergence.
-
-```bash
-ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
-  'cd /workspace/praxis && git fetch -q origin && git status --porcelain | head -3 && git pull --rebase -q && git log --oneline -1'
-```
-
-A dirty or diverged checkout is a REPORT, not something to force past: another loop may be executing
-that file right now. If a stray per-project copy or launcher still exists, point it at the canonical
-script with a symlink rather than re-copying it.
-
-**THREE checkouts exist, and the plugin comes from only one of them.** `/workspace/praxis`,
-`/workspace/praxis-plugin` and `/workspace/af-praxis` are separate clones of this repo. Since
-2026-08-13 the marketplace resolves to `praxis-plugin` (see *Box facts*), but that is a setting, not
-a law — check it, never assume:
-
-```bash
-ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
-  "python3 -c \"import json,pathlib;print(json.loads((pathlib.Path.home()/'.claude/settings.json').read_text()).get('extraKnownMarketplaces'))\""
-```
-
-Whatever that path says is where SKILL.md, hooks and `evals/` are loaded from for every worker
-session. A fix applied to the other clone compiles, tests green, commits cleanly — and changes
-nothing about the running system. Observed 2026-08-06: a judge fix was verified in `af-praxis`
-while the marketplace pointed at `praxis`, so the very next run reproduced the bug it supposedly
-fixed. Patch the checkout on the marketplace path, or patch both and say so.
-
-The loop SCRIPT is resolved separately, from the path you invoke in step 6, so the driver and the
-plugin come from different clones **by design now** — that is what lets the plugin be refreshed
-while a build runs. It is still the thing that bites: refreshing the driver in step 5b tells you
-nothing about the plugin, and vice versa. When a change "did not take effect", check which of the
-two you actually updated.
-
-A plugin refresh is its own sequence, and the version bump is not optional — the install cache is
-keyed by version (`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>`), so same-version
-content changes are simply never picked up:
-
-```bash
-git -C /workspace/praxis-plugin pull --ff-only          # safe any time; nothing executes from here
-# bump agent_factory/.claude-plugin/plugin.json version, then reinstall / reload plugins
-```
-
-**6. Launch detached** so the loop survives the SSH connection closing. Pass `none` for redis when
-the project has none; pass `[max]` only if the user bounded the run. The driver locates its own hooks,
-interpreter, and state dir from its path, so nothing here is project-specific.
-
-```bash
-ssh -n -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
-  "cd /workspace && AF_WATCH=1 setsid nohup /workspace/praxis/agent_factory/scripts/af-supervise.sh /workspace/praxis/agent_factory/scripts/af-ticket-loop.sh \
-     '<project>' '<worktree>' <pg> <redis|none> <max?> \
-     > /workspace/af-<project>-loop.log 2>&1 < /dev/null & disown; echo launched"
-```
-
-**`AF_WATCH=1` belongs on every remote run — leave it on.** Without it the loop exits the moment the
-set drains, so any ticket authored afterwards is invisible until a human relaunches. That gap is what
-gets filled with a hand-written supervisor script living outside this repo, and that is not
-hypothetical: one was written, and it carried three separate restart bugs — it relaunched straight
-through a billing failure; it could not distinguish a dependency stall from a clean drain (both exit
-`0`) and relaunched **340 times in 8 hours**; and its process-match pattern matched its own command
-line, so it would have spawned a duplicate of itself. Every one of those was an outside re-derivation
-of state this loop already knows exactly. **Do not write a supervisor. If a run needs to keep going,
-that behaviour belongs in the loop.**
-
-Stop a watching run with `touch <parent-of-worktree>/af-watch-stop-<worktree-basename>` (or whatever
-`AF_WATCH_STOP` names) — it exits cleanly at the next poll. A DELIBERATE halt (preflight failure,
-billing, or any unrecoverable condition) still exits immediately and is never waited through: watch
-mode only ever waits on a genuine drain or a dependency stall, both of which a human resolves without
-restarting anything.
-
-Optional knobs, prefixed before the command: `AF_MODEL_BACKEND=sonnet` (default deepseek),
-`AF_BATCH_MAX=<n>` (round width, default 4 on this EC2 host), `AF_MIN_FREE_GB=<n>` (disk floor, default 15),
-`AF_VERIFY_TIMEOUT_S=<n>` (verification bound, default 2700), `AF_WATCH_POLL_S=<n>` (watch cadence,
-default 300).
-
-**7. Confirm it came up** — the loop refuses to start on a half-configured model backend, and that
-failure is otherwise silent:
-
-```bash
-sleep 20 && ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
-  'tail -15 /workspace/af-<project>-loop.log; echo "--- tmux ---"; tmux ls 2>/dev/null'
-```
-
-A `preflight: FAILED` line is a real stop — report it verbatim rather than assuming the run started.
-Repeated `FATAL: round #N pane never signalled ready after 240s` lines are the AUTH/onboarding
-signature — go back to "Box auth" above and run the READY smoke; do not let the loop spin.
-
-**8. Report** the tmux session, the log path, and these operator commands:
-
-- observe: `ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 -t 'tmux attach -t af-<worktree-basename>'`
-- tail: `... 'tail -f /workspace/af-<project>-loop.log'`
-- progress: `... '/workspace/af-progress-watch.sh'`
-- stop: `... 'pkill -f "af-ticket-loop.sh [<]project-initial>..."; tmux kill-session -t af-<worktree-basename>'`
-  — bracket ONE character of the pattern, e.g. `pkill -f "af-ticket-loop.sh [a]ppeal_engine"`. Without
-  the bracket the pattern matches the ssh command carrying it, so `pkill` kills itself first and the
-  rest of the line never runs: the loop dies while its claude session keeps building unsupervised, and
-  the failure is silent.
-
-## Progress logging — a heartbeat is not progress
-
-**A heartbeat proves the process is alive. It cannot tell you how far along it is, whether it will
-finish this hour, or whether what it is producing is getting worse.** Those are the questions
-actually asked while a job runs, and answering them by waiting for the job to end is the same as
-not answering them.
-
-Measured on the first campaign to run an expensive step: it ran **28 minutes emitting nothing**.
-Its per-unit scores were 0.6183 / 0.6273 / 0.4123 / 0.0491 — diverging from the third unit onward
-— and it was *simultaneously* being truncated by a wall-clock budget. Both facts existed inside
-the process the whole time. Both were only discoverable after it exited, by which point a
-meaningless number had been adjudicated and recorded as a verdict. Every check while it ran
-returned "394% CPU", which was true right up to the end and told nobody anything.
-
-Any step that can run longer than a few minutes MUST emit one line per unit of work:
-
-```python
-import sys; sys.path.insert(0, "<praxis>/agent_factory/scripts")
-from progress import Progress
-
-p = Progress("M06 stgcn", total=20)      # total is what makes an ETA possible
-for unit in units:
-    ...
-    p.step(score=metric)                  # score enables the degradation warning
-p.done()
-```
-
-```
-[progress] M06 stgcn 7/20 35% elapsed 9m48s eta 18m12s last=0.6183 mean=0.6221
-[progress][WARN] M06 stgcn: last=0.0491 is 3.2 sigma below the mean of the previous 7 (0.5881)
-```
-
-Three properties are load-bearing:
-
-- **`total` gives an ETA**, which is what turns "it is still running" into a decision. The unit
-  count is almost always known up front — folds × seeds, files to migrate, tickets in a set.
-- **`score` gives a degradation warning** *while there is still time to act*. It fires at 3 sigma
-  over at least 4 prior samples, so it stays rare enough to be read.
-- **Lines are flushed and prefixed `[progress]`**, so a supervisor can `grep` them out of an
-  interleaved log. A buffered progress line is not a progress line.
-
-**The consumer half is where this actually breaks.** A correct producer is useless behind a
-reader that buffers, and the obvious reader is wrong in a way that looks right:
-
-```python
-for line in proc.stdout:          # WRONG -- hidden read-ahead buffer withholds lines
-```
-
-Iterating a pipe in text mode fills an internal buffer before yielding anything. Measured: an arm
-emitted its first progress line at 1m31s and then nothing for 30 minutes, while the child sat at
-373% CPU working normally. The producer was correct and `PYTHONUNBUFFERED` was set — the
-supervisor's own reader was holding the lines. Use the helper:
-
-```python
-from progress import stream_progress
-out = stream_progress(proc)       # echoes [progress] live, returns full stdout
-```
-
-It also drains stdout continuously, which matters independently: a child that fills a pipe nobody
-is reading BLOCKS, so collecting output only after `wait()` deadlocks anything chatty enough to
-fill 64KB.
-
-Non-Python steps follow the same convention by hand: one flushed line per unit, prefixed
-`[progress]`, carrying `n/total`, `elapsed`, and a metric where one exists.
-
-This matters more here than anywhere else: the job is **detached**, so its log is the only
-channel that exists. `tmux capture-pane` shows you a REPL, and the claim heartbeat shows you a
-lease — neither shows you whether the work is advancing. A remote job that emits no progress can
-only be judged by waiting for it, which defeats the point of detaching it.
-
-## Choosing the model
-
-The loop runs `sonnet` by default. Override per run:
+For a short command:
 
 ```sh
-AF_CLAUDE_MODEL=opus agent_factory/scripts/af-ticket-loop.sh ...
+ssh -o BatchMode=yes winlaptop 'wsl -d Ubuntu --exec bash -lc "ls /workspace"'
 ```
 
-It was hardcoded in three places — the launch line, the auth probe, and the box's
-`~/.claude/settings.json` — so a project that needed a stronger model had no way to say so, and
-no way to discover that it could not. The loop simply ran on whatever the hardcode said and the
-run looked entirely normal.
+For a longer operation, write a script locally and pipe it to WSL Bash. Keep command
+text and data separate; do not interpolate JSON, credentials, backticks or command
+substitutions into a Windows command line. Strip Windows carriage returns from
+responses when needed. Long jobs run in the owned user service, not the SSH shell.
 
-**The probe uses the same variable deliberately.** A probe that validates a different model than
-the loop launches proves nothing about the launch: auth, quota and availability can all differ
-per model, so a green probe on one model and a failing loop on another is exactly the confusing
-state this avoids.
+Resolve rather than guess:
 
-**`~/.claude/settings.json` on the box is a separate setting** and will silently win for anything
-that does not pass `--model`. Change both, or expect them to disagree.
+1. The target's actual Git worktree and integration branch. Worktree and Praxis
+   project names routinely differ. Preserve dirty work and live worker branches.
+2. Its project/org and private Praxis identity from existing local configuration.
+   A different project's/default factory key is not interchangeable. Confirm the
+   intended plan and applicable checks exist before dispatch.
+3. Its real application/database ports and existing Python environment. Inspect
+   local project configuration and running services; do not change other jobs.
+4. A current canonical factory release containing `scripts/af-runtime-setup.py`.
+   Prefer `~/.praxis/factory-current/agent_factory` when present.
+   `/home/mattd/af-factory/agent_factory` is an older source location, but it may
+   contain unpublished commits. Never reset it or assume it is current. Refresh
+   via a new committed release/snapshot, without overwriting a live runtime.
 
-## Never
+Inspect current service, tmux and worktree-lock ownership before installing. If the
+same project already runs, report its real status and leave it running. A live
+service or worktree mutex is not permission to start a duplicate or change its
+settings. Use a separate worktree for unrelated work.
 
-- Never wait for the build to finish; this triggers and returns.
-- Never guess the worktree or the ports — resolve them per step 2.
-- Never launch without patching `FACTORY_PROJECT` (step 4); the gate fails silent, not loud.
-- Never kill an existing loop session without asking.
-- Never use `/workspace/af-queue.sh` for a single project — it is the sequential multi-project driver.
-- Never push from the box on the user's behalf; the loop's own prompt already forbids it.
+## Reuse the existing laptop authentication
 
-## Durable recovery (required for unattended runs)
+Default to `backend=sonnet`, `model=sonnet`, unless the owner selects another model.
+Use the existing authenticated Claude config directory, normally
+`~/.praxis/auth/claude` on WSL, or the already working private login directory.
+Do not ask the owner to authenticate again while that identity works.
 
-Launch the driver through the shipped `agent_factory/scripts/af-supervise.sh` wrapper, inside the project's existing tmux or systemd host. The wrapper retries nonzero exits with backoff, retains pending verification, exits on successful drain, and respects an explicit operator stop. Never use a blanket process killer or another project's service. Refresh the complete shipped scripts directory, including `af-ticket-loop.sh`, `af-recovery.sh`, `af-supervise.sh`, `af-scope-exec.py`, and `af-stop-owned-scopes.py`, together, along with the matching shipped hooks directory (including `_ticket_state.py`, `_praxis.py`, and `_operator_notice.py`); a driver-only copy is incomplete.
+If credentials have to be imported from the local laptop, use
+`scripts/af-claude-auth.py` and a private file/transport. It selects the current
+user's `Claude Code-credentials` Keychain account, validates subscription OAuth,
+and never prints the token. An MCP-only Keychain record is not a model login.
+Import only the existing authorized identity. Never put credentials in Git, a
+prompt, the command line, logs or a static project profile.
 
-For a systemd-managed job use `Restart=on-failure`, `RestartSec=30s`, and a project-owned resource slice. Enable its user unit for host recovery and verify user-manager/host keepalive for that execution host. Intentional `systemctl stop` must stay stopped; a successful completed build must not be relaunched. The supervisor is the shipped implementation, replacing the earlier instruction to rely on the watch loop alone.
+The installer generation-probes the selected model when `--start` is used. Login
+status alone is insufficient. A real auth/network failure is not a healthy startup;
+report the observed failure without pretending a worker started.
 
-The driver writes an atomic `af-pending-verification-<project>` checkpoint before verifying a merged tree. This is local recovery intent, not a ticket status or a fabricated check result; Praxis remains authoritative for ticket/check outcomes. Restart replays that checkpoint on the exact recorded integration commit before new dispatch. A missing/failed verdict retains it, and only coherent completed verification removes it. Never remove it to get a stalled run moving. An altered integration HEAD requires reconciliation rather than pretending the checkpoint covered a different tree.
+## Install and launch
 
-Verification extends its advisory wall time while the verifier or a real test child is active. A CLI that has completed its turn without a verdict is recovered immediately instead of sitting at an idle prompt. Record command durations and concrete progress; an active service or fresh lease alone does not prove progress. Use failure-injection tests in `tests/test_runner_recovery.py` when changing this contract.
+Use a static profile for project-specific scope and resource overrides. The defaults
+already provide rolling native workers, advisory dependency start ordering, memory
+admission, resumable recovery and scoped validation. Keep required checks mandatory;
+never globally demote rubrics or auto-approve manual requirements to accelerate a
+run. Exclude unrelated legacy subsystems only when that matches the owner's scope.
 
-Set `AF_SERVICE_UNIT` to the project's owning systemd service. Launch worker and heavy-validation resource scopes through `scripts/af-scope-exec.py --unit <unique-owned-unit> --slice <project-slice> -- <command...>` (with the existing memory limits). It binds each scope to that service with `BindsTo` and `After`; an inactive owner refuses the launch instead of starting a scheduler or running unowned work. This prevents orphaned tests from retaining the validation lock after their verifier/driver dies. Resource limits alone do not establish lifetime ownership.
+Run on the resolved Linux host, using its real paths and ports:
 
-## Efficient unattended workflow
+```sh
+python3 "$FACTORY/scripts/af-runtime-setup.py" \
+  --project "$PROJECT" --worktree "$WORKTREE" \
+  --pg-port "$PG_PORT" --redis-port none \
+  --python "$FACTORY_PYTHON" \
+  --claude-config-dir "$EXISTING_CLAUDE_CONFIG" \
+  --profile "$PROJECT_PROFILE" \
+  --start
+```
 
-For the owner's unattended builds set `AF_DEPENDENCIES_ADVISORY=1`, `AF_FAST_VERIFY=1`, and `AF_ROLLING=1`. A temporary drain setting must be restored after a policy cutover; leaving rolling refill disabled makes an idle slot wait for the entire slowest batch. Dependency-ready tickets start first, then resource-admitted open work may fill spare slots even when prerequisites are blocked. This does not authorize missing interfaces, fabricated behavior, or green checks over unimplemented requirements. Codex runs one direct worker per ticket, including single-ticket frontiers; the driver schedules and integrates them. No polling coordinator is needed. Parallelism remains bounded by free memory and CPU admission.
+Omit `--profile` when defaults match. Supply `--environment-file` and optionally
+`--application-env-file` only when the existing project settings do not already
+provide those values. Private JSON inputs must be owner-only files. Do not expose
+their contents when diagnosing startup. Redis may be a resolved port instead of
+`none`. Do not pick the default Postgres port merely because the argument permits it.
 
-Target 5–10 minutes of normal validation feedback, with no hard cutoff. During edits run the failing acceptance case, changed-module tests and transitive callers/dependents, including runtime authorization and isolation checks that static imports cannot discover. Run required final checks once on the committed clean tree. Fail fast, repair the observed error, and reuse baseline evidence only when revision, command and fixture/toolchain context match. Do not add repeated whole-package sweeps merely to collect timing or invent worker pins for every repository-wide command. Authored binary checks remain mandatory; revise their contracts explicitly when changing scope.
+The setup pins this project's environment, installs its own user units, snapshots
+committed factory code and starts the supervisor. On WSL it also creates a
+service-bound Windows keepalive. It does not change global WSL settings, restart
+other services, pull/reset a shared checkout or push code. `--render-only` previews
+the isolated artifacts without changing the project or starting anything.
 
-The fast integration lane preserves required pinned acceptance and risk-specific checks. Full integration/build/release suites run at phase gates. An unknown phase-gate classification conservatively selects full validation. Neither an incomplete fast run nor a matching baseline first failure proves a whole-suite pass. Record commands, durations, revisions, fixtures and remaining failures so the next worker resumes evidence rather than recreating it.
+## Confirm and return
 
-For isolated validation commands, `scripts/af_validation_slots.py` retains its compatibility profiles and a weighted profile: three 3 GiB reservations. An API or audited lightweight unit check uses one reservation (3 GiB command cap); a browser/build check uses two (6 GiB cap). Only one browser/build check runs at a time. Thus three small checks OR one browser/build plus one small check reserve at most 9 GiB under the existing 12 GiB project limit. `validation_kind` recognizes direct unit tools and only the npm script names explicitly audited by the project; unknown scripts keep the larger profile. The laptop audits `test` and `test:ticket`. A measured high-memory unit check may select `force_large=True` (the laptop exposes `MVPVUE_VALIDATION_LARGE=1`), taking the existing larger reservation rather than raising the project limit. Checkout locks cover all subdirectories of one Git worktree, preserve the legacy cwd lock, and keep linked worktrees independent.
+Verify the actual owning service is active, inspect its journal, and confirm a
+native worker was launched or the driver is in a specifically identified legitimate
+preflight/recovery phase. A transient observation timeout is not proof it stopped.
+Do not replace a quiet but live worker solely because a poll expired.
 
-Use `working_set_bytes(cgroup)` for project pressure: subtract only inactive file cache, retaining active-file, anonymous and kernel charges. Require `reservation_fits(working, requested, limit)` to leave 1 GiB beyond the command reservation inside the actual finite hard limit; smaller jobs must not face a lower admission threshold than larger builds. Also require more than 8 GiB host `MemAvailable`. Raw `memory.current` alone can strand every guard behind cache from completed builds. Per-command limits, the 9 GiB reservation budget, and the project hard cap all remain enforced. These measured laptop profiles followed approximately 1.4 GiB API peaks on a 32-CPU host; keep other hosts' limits explicit.
+Report the observed state plus these commands with the actual project substituted:
 
-Migrate admission protocols without restarting workers: drain legacy exclusive callers or requeue only Python guards positively identified as still waiting before Node/fixtures start. Preserve a budget reservation for every legacy active API until its scope exits; otherwise new weighted callers could over-admit alongside work the new scheduler cannot see. Write an explicit admission-only retry explanation into the interrupted command’s log, preserve its revision/session/worktree, and never report an interrupted admission as a test result. Leave active checks running. Keep scopes bound to the owning service.
+```sh
+systemctl --user status praxis-af-<project>.service
+journalctl --user -u praxis-af-<project>.service -f
+~/.praxis/runtimes/<project>/bin/af-runtime observe
+systemctl --user stop praxis-af-<project>.service
+```
 
-Prefer an active-heartbeat note for in-flight guidance: a private mode-0600 `$AF_STATE_DIR/operator-notices/<sha256(project:cid)>.json` with `project`, canonical `cid`, exact `owner`, resolved `cwd_prefix`, future `expires_at`, and advisory `message`. The live lease guard must pass and the worker must perform its own heartbeat before the note is consumed once and printed to its tool output. A finished/blocked worker cannot be restarted by this mechanism. Check the worker's actual tool cwd; it may be the integration checkout even when its edited files live in a ticket worktree. Verify the delivered receipt and the worker's next action. For an explicit resume of an idle unfinished worker, preserve its native session and valid pins and confirm the pasted prompt actually starts a turn; a claim or a draft input alone is not progress.
-
-Operator messages queued in an active Codex UI are follow-up TURNS, not immediate steering of the current turn. They can execute after a worker finishes and accidentally cause it to reopen and revalidate an already finished ticket. Do not leave advisory messages queued across completion. Before sending guidance, check authoritative ticket state; explicitly make it conditional on the current unfinished attempt and forbid reopening a finished ticket without a new failure or changed requirement. Withdraw obsolete queued guidance without stopping the worker or its active checks. Preserve its session, worktree, revision, and existing valid evidence.
-
-For a live scheduler-policy change, the shipped `scripts/af_live_handoff.py` supports one-shot adoption of existing workers. After inspecting the owning supervisor/driver PIDs, live worker sessions, and absence of an in-flight integration verification, write a private mode-0600 `$AF_STATE_DIR/af-live-handoff-$FACTORY_PROJECT.json` with `project`, `owner_unit`, `expires_at` (Unix seconds, less than ten minutes ahead), and equal-length `ids` / `sessions` arrays naming only those existing workers. Keep the owner service active and terminate only its driver child. The supervisor's scope cleanup skips once for this validated handoff; the next driver consumes it, exports carry IDs/sessions and enables rolling refill AFTER pinned project settings load. Any absent/expired/invalid handoff uses normal cleanup. Verify the original native Codex PIDs and active test scopes survived, then verify an actual new ticket starts in the freed slot. Do not replace workers, launch fresh sessions for the carried tickets, or count this control-plane operation as test evidence. The laptop's adoption path was exercised with a real supervisor retry and with unchanged live native-worker PIDs; its unit tests also cover invalid identity, expiration, permissions, missing sessions, one-shot cleanup, and settings-export order.
+Return once startup is confirmed. The service owns retries, idle continuation,
+resource admission and twenty-minute timing observations; do not hold an SSH session
+or add another polling coordinator to keep it alive. Observations are diagnostics,
+not validation passes. When asked to optimize a slow ticket, use its original elapsed
+clock and actual commands/queues; preserve required coverage and compatible evidence.

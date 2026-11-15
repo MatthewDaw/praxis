@@ -4,7 +4,9 @@ import re
 
 
 def rejection_reason(args: list[str], *, allow_project_types: bool = False,
-                     ticket_base: str = '') -> str:
+                     ticket_base: str = '',
+                     selected_directories: tuple[str, ...] = ('src/features/league/', 'src/features/forms/'),
+                     excluded_commands: tuple[str, ...] = ('test:parity', 'check:architecture', 'check-architecture.ts')) -> str:
     """Require concrete selectors for generic suite runners.
 
     Project-specific acceptance scripts remain responsible for their own scope.
@@ -14,6 +16,8 @@ def rejection_reason(args: list[str], *, allow_project_types: bool = False,
         return ''
     command = Path(args[0]).name
     words = args[1:]
+    if command in excluded_commands or any(x in excluded_commands for x in words):
+        return 'Command excluded by the project validation scope; select authored paths and affected checks.'
     if command == 'check-architecture.ts' or 'check:architecture' in words:
         return 'The whole-repository architecture census is outside ticket scope; review authored paths and run scoped type/lint checks.'
     if command == 'grade-authored-diff.ts':
@@ -31,8 +35,6 @@ def rejection_reason(args: list[str], *, allow_project_types: bool = False,
         )
         if not selected_types:
             return 'Use the scoped type helper with the ticket base; whole-project type censuses are disabled for ticket checks.'
-    if 'test:parity' in words:
-        return 'Legacy host parity is outside this league ticket build.'
     vitest = command.startswith('vitest')
     if vitest and ('related' in words or any(x.startswith('--changed') for x in words)):
         return 'Use explicit affected test files; shared application imports expand into unrelated suites.'
@@ -44,7 +46,7 @@ def rejection_reason(args: list[str], *, allow_project_types: bool = False,
     if not generic:
         return ''
     selected = any(re.search(r'\.(?:test|itest|spec)\.[cm]?[jt]sx?$', x) for x in words)
-    selected = selected or any(x.startswith(('src/features/league/', 'src/features/forms/')) for x in words)
+    selected = selected or any(x.startswith(selected_directories) for x in words)
     # A dedicated browser config can define its own narrowly selected journey.
     config = next((x for x in words if 'playwright.' in x and x.endswith(('.js', '.ts', '.mjs'))), '')
     selected = selected or bool(config and Path(config).name not in {

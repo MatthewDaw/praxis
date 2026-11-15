@@ -8,10 +8,10 @@ import subprocess
 import sys
 
 
-def judge_command(binary, prompt, model='sonnet'):
+def judge_command(binary, model='sonnet'):
     # MCP configuration is variadic; the delimiter keeps the prompt out of it.
     return [binary, '-p', '--model', model, '--no-session-persistence', '--tools', '',
-            '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--', prompt]
+            '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--']
 
 
 def main():
@@ -30,7 +30,7 @@ def main():
     for name in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
                  'CLAUDE_CODE_OAUTH_TOKEN'):
         env.pop(name, None)
-    result = subprocess.run(judge_command(binary, prompt, args.model), env=env)
+    result = subprocess.run(judge_command(binary, args.model), input=prompt, text=True, env=env)
     return result.returncode
 
 

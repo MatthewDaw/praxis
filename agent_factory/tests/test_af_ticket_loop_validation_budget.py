@@ -122,7 +122,10 @@ def test_solo_codex_worker_has_no_polling_coordinator() -> None:
     assert ' gates baseline services' in result.stdout
     assert 'HOLD the turn open by polling' not in result.stdout
     assert 'spawn ONE worktree-isolated subagent' not in result.stdout
-    assert 'if [ "$BACKEND" = codex ]; then\n    # Driver-side fan-out' in SRC
+    native = _function('af_native_fanout')
+    supported = subprocess.run(['bash', '-c', 'BACKEND=codex\n' + native + '\naf_native_fanout'])
+    assert supported.returncode == 0
+    assert 'if af_native_fanout; then\n    # Driver-side fan-out' in SRC
 
 
 def test_fast_lane_preserves_dependents_required_checks_and_soft_budget() -> None:

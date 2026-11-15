@@ -9,10 +9,12 @@ import re
 import uuid
 
 
-def resume_session(state: Path, project: str, ticket: str) -> str:
+def resume_session(state: Path, project: str, ticket: str, backend: str = 'codex') -> str:
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', ticket):
         return ''
     path = state / 'retired-workers' / (ticket + '.json')
+    if backend == 'sonnet' and (state / 'retired-workers' / (ticket + '-claude.json')).exists():
+        path = state / 'retired-workers' / (ticket + '-claude.json')
     try:
         stat = path.stat()
         if stat.st_uid != os.getuid() or stat.st_mode & 0o077:
@@ -27,11 +29,19 @@ def resume_session(state: Path, project: str, ticket: str) -> str:
             return ''
         if record.get('terminal_state', 'finished') not in {'finished', 'blocked'}:
             return ''
-        session = str(uuid.UUID(record['codex_session_id']))
+        key = 'claude_session_id' if backend == 'sonnet' else 'codex_session_id'
+        session = str(uuid.UUID(record[key]))
         rollout = Path(record['rollout'])
         with rollout.open() as stream:
+            if backend == 'sonnet':
+                for index, line in enumerate(stream):
+                    if index > 30:
+                        break
+                    if json.loads(line).get('sessionId') == session:
+                        return session
+                return ''
             meta = json.loads(stream.readline())
-        return session if meta.get('payload', {}).get('id') == session else ''
+            return session if meta.get('payload', {}).get('id') == session else ''
     except (OSError, ValueError, KeyError, TypeError):
         return ''
 
@@ -61,5 +71,6 @@ if __name__ == '__main__':
     parser.add_argument('--state-dir', type=Path, required=True)
     parser.add_argument('--project', required=True)
     parser.add_argument('--ticket', required=True)
+    parser.add_argument('--backend', choices=['sonnet', 'codex'], default='codex')
     options = parser.parse_args()
-    print(resume_session(options.state_dir, options.project, options.ticket))
+    print(resume_session(options.state_dir, options.project, options.ticket, options.backend))

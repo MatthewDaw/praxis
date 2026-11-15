@@ -48,6 +48,9 @@ def preserve_active_workers(owner):
 def main():
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from af_live_handoff import handoff_path, read_valid, skip_cleanup_once
+    if '--prepare-handoff' in sys.argv[1:]:
+        owner = os.environ.get('AF_SERVICE_UNIT')
+        return 0 if owner and preserve_active_workers(owner) else 1
     if read_valid(handoff_path()) is not None:
         skip_cleanup_once()
         print('[recovery] preserving live worker scopes while the validated scheduler handoff is pending', file=sys.stderr)

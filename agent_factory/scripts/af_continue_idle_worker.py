@@ -2,6 +2,7 @@
 from pathlib import Path
 import argparse
 import json
+import os
 import re
 import subprocess
 import time
@@ -56,9 +57,10 @@ def main() -> None:
             'Continue this existing ticket now; authoritative Praxis state is still unfinished. '
             'Preserve your branch, context and completed evidence. Claim or heartbeat the existing '
             'ticket without resetting checks. Complete only the remaining changed-code and affected '
-            'league checks, record real results, and release finished when covered. Do not stop with '
+            'feature checks, record real results, and release finished when covered. Do not stop with '
             'a to-do list or wait for approval. Do not restart implementation or run unrelated legacy '
-            'video suites. Record a blocker only for genuine technical inability.'
+            'suites. Record a blocker only for genuine technical inability. '
+            + os.environ.get('AF_OWNER_EXECUTION_POLICY', '')
         )
         subprocess.run(['tmux', 'send-keys', '-t', session, '-l', message], check=True)
         subprocess.run(['tmux', 'send-keys', '-t', session, 'Enter'], check=True)

@@ -224,7 +224,7 @@ set -euo pipefail
 # ---------------------------------------------------------------- backend selection ----
 DEEPSEEK_KEY_FILE="$HOME/.deepseek_key"
 OAUTH_TOKEN_FILE="$HOME/.claude/oauth-token.sh"
-CREDENTIALS_FILE="$HOME/.claude/.credentials.json"
+CREDENTIALS_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
 
 # Reads claudeAiOauth.subscriptionType out of the credentials file: "max", "pro", or
 # empty when there is no readable file (macOS keeps auth in the Keychain, so absence is
@@ -1132,7 +1132,8 @@ READY_POLL_MAX=40   # 40 * 2s = 80s cap
 # and that is strictly safer: a 4KB string send-keys'd into a not-quite-ready input box is
 # swallowed whole and the round waits out the stall net for nothing. sonnet and deepseek start
 # empty and still need the send-keys path.
-af_prompt_is_argv(){ [ "$BACKEND" = grok ] || [ "$BACKEND" = codex ]; }
+af_prompt_is_argv(){ [ "$BACKEND" = grok ] || [ "$BACKEND" = codex ] || [ "$BACKEND" = sonnet ]; }
+af_native_fanout(){ [ "$BACKEND" = codex ] || [ "$BACKEND" = sonnet ]; }
 
 # Launch the configured agent into a detached tmux session. For grok and codex, the prompt
 # is the TUI's initial argv so we do not have to type a 4KB string into a not-quite-ready
@@ -1140,24 +1141,38 @@ af_prompt_is_argv(){ [ "$BACKEND" = grok ] || [ "$BACKEND" = codex ]; }
 # and deepseek the CLI still starts empty and the caller send-keys the prompt after
 # pane_is_ready.
 af_launch_agent(){   # $1=tmux session  $2=optional initial prompt (grok/codex only)
-  local sess="$1" prompt="${2:-}" pf resume_id launch="$CLAUDE_LAUNCH"
-  if [ "$BACKEND" = codex ] && [[ "$sess" == "$SESSION"-* ]]; then
+  local sess="$1" prompt="${2:-}" pf resume_id launch="$CLAUDE_LAUNCH" plugin_q mcp_q wt_q
+  if [ -n "$prompt" ]; then
+    prompt=$(printf '%s' "$prompt" | "$PY" "$(dirname "${BASH_SOURCE[0]}")/af_launch_prompt.py" \
+      --backend "$BACKEND" --factory "$AF_PLUGIN_DIR") || return 125
+  fi
+  if [ "$BACKEND" = sonnet ]; then
+    printf -v plugin_q '%q' "$AF_PLUGIN_DIR"
+    launch="$launch --plugin-dir $plugin_q"
+    if [ -n "${AF_RUNTIME_MCP_CONFIG:-}" ]; then
+      printf -v mcp_q '%q' "$AF_RUNTIME_MCP_CONFIG"
+      launch="$launch --strict-mcp-config --mcp-config $mcp_q"
+    fi
+  fi
+  if af_native_fanout && [[ "$sess" == "$SESSION"-* ]]; then
     resume_id=$("$PY" "$(dirname "${BASH_SOURCE[0]}")/af_resume_context.py" \
       --state-dir "$AF_STATE_DIR" --project "${FACTORY_PROJECT:-$PROJECT}" \
-      --ticket "${sess#"$SESSION"-}" 2>/dev/null) || resume_id=""
+      --ticket "${sess#"$SESSION"-}" --backend "$BACKEND" 2>/dev/null) || resume_id=""
     if [[ "$resume_id" =~ ^[0-9a-f-]{36}$ ]]; then
-      launch="$launch resume $resume_id"
+      if [ "$BACKEND" = sonnet ]; then launch="$launch --resume $resume_id"; else launch="$launch resume $resume_id"; fi
       say "resuming archived conversation for ${sess#"$SESSION"-}"
     fi
   fi
+  printf -v wt_q '%q' "$WT"
   tmux kill-session -t "$sess" 2>/dev/null || true
   tmux new-session -d -s "$sess" -c "$WT"
   if af_prompt_is_argv && [ -n "$prompt" ]; then
     pf="${AF_STATE_DIR}/af-${sess}.prompt"
     printf '%s' "$prompt" > "$pf"
-    tmux send-keys -t "$sess" "cd $WT && set -a && . '${AF_STATE_DIR}/af-agent-${PROJECT}.env' && set +a && $launch -- \"\$(cat '$pf')\"" Enter
+    chmod 600 "$pf"
+    tmux send-keys -t "$sess" "cd $wt_q && set -a && . '${AF_STATE_DIR}/af-agent-${PROJECT}.env' && set +a && $launch -- \"\$(cat '$pf')\"" Enter
   else
-    tmux send-keys -t "$sess" "cd $WT && set -a && . '${AF_STATE_DIR}/af-agent-${PROJECT}.env' && set +a && $CLAUDE_LAUNCH" Enter
+    tmux send-keys -t "$sess" "cd $wt_q && set -a && . '${AF_STATE_DIR}/af-agent-${PROJECT}.env' && set +a && $CLAUDE_LAUNCH" Enter
   fi
 }
 
@@ -1166,6 +1181,10 @@ af_wait_ready(){   # $1=tmux session  $2=optional poll cap (default READY_POLL_M
   for i in $(seq 1 "$max"); do
     sleep 2
     pane=$(tmux capture-pane -t "$sess" -p 2>/dev/null || echo "")
+    if [ "$BACKEND" = sonnet ] && af_ihas "$pane" "Do you trust the (files|contents)|Yes, I trust"; then
+      tmux send-keys -t "$sess" Enter
+      continue
+    fi
     if af_has "$pane" "bypass permissions on"; then return 0; fi
     if [ "$BACKEND" = grok ]; then
       # The first-run directory-trust splash also prints "Grok Build 1.0.5".
@@ -1270,7 +1289,7 @@ af_in_list(){ case " $2 " in *" $1 "*) return 0;; esac; return 1; }
 af_count(){ set -- $1; echo $#; }
 af_rolling_refill(){   # $1 = open count of the current batch; launches next-batch workers into free slots
   local open="$1" inflight slots rcap pick new wid wsess k=0 taken
-  [ "${AF_ROLLING:-0}" = "1" ] && [ "$BACKEND" = codex ] || return 0
+  [ "${AF_ROLLING:-0}" = "1" ] && af_native_fanout || return 0
   # Drain switch: `touch $AF_STATE_DIR/af-norefill-$PROJECT` stops refilling so the batch reaches a
   # real boundary (no carried workers) — the only safe moment to swap the driver or stop the loop.
   [ -e "$AF_STATE_DIR/af-norefill-$PROJECT" ] && { say "rolling refill SUSPENDED (af-norefill-$PROJECT present) — draining to a clean boundary"; return 0; }
@@ -3479,6 +3498,9 @@ af_assert_no_stragglers(){
 af_cleanup_on_exit(){
   local rc=$?
   set +e
+  if [ "$rc" -ne 0 ] && [ -n "${AF_SERVICE_UNIT:-}" ]; then
+    "$PY" "$(dirname "${BASH_SOURCE[0]}")/af-stop-owned-scopes.py" --prepare-handoff >/dev/null 2>&1 || true
+  fi
   if "$PY" "$(dirname "${BASH_SOURCE[0]}")/af_live_handoff.py" pending >/dev/null 2>&1; then
     say "live scheduler handoff — preserving worker checkouts and resumable contexts"
     af_release_worktree_lock
@@ -4768,7 +4790,7 @@ af_round_prompt(){ local ids_csv="$1" size="$2"; printf '%s' "/af-build $PROJECT
   # machine-wide backend file, so it deliberately overrides that file rather than
   # trusting it to agree with $AF_MODEL_BACKEND. Grok gets the prompt as argv.
   AF_ROUND_IDS="$*"
-  if [ "$BACKEND" = codex ]; then
+  if af_native_fanout; then
     # Driver-side fan-out: one Codex session per ticket, each scoped to exactly one id.
     AF_WORKER_SESSIONS=""; ok_ids=""
     for wid in $@; do
@@ -4796,7 +4818,7 @@ af_round_prompt(){ local ids_csv="$1" size="$2"; printf '%s' "/af-build $PROJECT
     done
     if [ -z "${ok_ids// /}" ]; then say "FATAL: no worker session came up for round #$round — nothing dispatched"; continue; fi
     set -- $ok_ids; size=$#; ids_csv=$(printf '%s' "$*" | tr ' ' ',')
-    say "submitted round #$round as $size parallel Codex session(s): $ids_csv"
+    say "submitted round #$round as $size parallel $BACKEND session(s): $ids_csv"
   else
   AF_WORKER_SESSIONS="$SESSION"
   af_launch_agent "$SESSION" "$round_prompt"
@@ -4899,7 +4921,7 @@ af_round_prompt(){ local ids_csv="$1" size="$2"; printf '%s' "/af-build $PROJECT
     now=${now:-$done_seen}
     # Finished Codex CLIs retain large contexts until the whole round ends.
     # Release only proven idle/unleased completions; preserve resumable sessions.
-    if [ "$BACKEND" = codex ] && [ "$now" -gt 0 ]; then
+    if af_native_fanout && [ "$now" -gt 0 ]; then
       retire_now=$(date +%s)
       if [ "$((retire_now - ${retire_last:-0}))" -ge 60 ]; then
         retire_last=$retire_now
@@ -4912,7 +4934,7 @@ af_round_prompt(){ local ids_csv="$1" size="$2"; printf '%s' "/af-build $PROJECT
     fi
     # A native worker can stop with a to-do list while its ticket is unfinished.
     # Resume that same idle conversation instead of waiting out the stall budget.
-    if [ "$BACKEND" = codex ]; then
+    if af_native_fanout; then
       continue_now=$(date +%s)
       if [ "$((continue_now - ${continue_last:-0}))" -ge 60 ]; then
         continue_last=$continue_now
