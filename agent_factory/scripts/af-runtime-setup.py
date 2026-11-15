@@ -166,7 +166,7 @@ Description=Praxis unattended build for {config['project']}
 Wants={name}-maintenance.timer
 [Service]
 Type=simple
-WorkingDirectory={systemd_quote(config['worktree'])}
+WorkingDirectory={config['worktree'].replace('%', '%%')}
 ExecStart={command} supervise
 Slice={config['slice']}
 UMask=0077

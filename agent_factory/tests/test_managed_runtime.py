@@ -272,3 +272,11 @@ def test_windows_keepalive_is_owned_and_quotes_paths_without_secrets(tmp_path):
     assert 'praxis-af-shop.service' in command
     assert 'factory with spaces' in command and '-RedirectStandardOutput' in command
     assert 'PRAXIS_API_KEY' not in command
+
+
+def test_service_working_directory_is_absolute_directive_not_argv():
+    config = dict(service='praxis-af-example.service', slice='praxis-af-example.slice',
+                  project='example', runtime='/private/runtime', worktree='/workspace/two words',
+                  memory_high_gib=8, memory_max_gib=12)
+    unit = setup.units(config)[config['service']]
+    assert 'WorkingDirectory=/workspace/two words\n' in unit
