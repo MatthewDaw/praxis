@@ -66,3 +66,27 @@ Do not publish tokens, headers, private forms or unredacted traces. Preserve pri
 raw evidence separately when redaction would destroy diagnostic value. Stop the
 browser and clean up owned fixtures on success or failure. Do not import a real
 user's signed-in browser profile.
+
+For known controls, import `runPageSweep` from `../scripts/page-sweep.mjs` in
+a private batch script and submit the clicks and their assertions together. This
+avoids a model turn, subprocess and fixed sleep between each known interaction.
+Pass the installed Playwright `chromium`, the target `origin`, `contextOptions`
+with the prepared profile, observed build, role and a fresh private output path.
+Use ordinary Playwright locators and assertions inside each check. For example:
+
+```js
+await runPageSweep(options, async visit => {
+  await visit('/settings', async (page, check) => {
+    await check('open-preferences', async () => {
+      await page.getByRole('button', { name: 'Preferences' }).click();
+      await page.getByRole('dialog', { name: 'Preferences' }).waitFor();
+    });
+  });
+});
+```
+
+The helper shares a browser context across visits, records timing and keeps
+partial observations if an assertion throws. A missed selector calls for
+triage. Reuse the log for each applicable result. Only record a scenario verdict
+after its expected behavior has been verified. Use interactive exploration when
+a page reveals an unfamiliar control.
