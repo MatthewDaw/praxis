@@ -61,7 +61,12 @@ errors and meaningful coverage gaps. Continue to another page when a deeper
 workflow needs a separate fixture. Use the full planner/generator/healer loop for
 reproducible failures or complex workflows. Reuse the established browser setup
 and session for routine actions without generating or replaying a test for each.
-Summarize unique pages, actions exercised and open workflows in the batch report.
+Cover several reachable pages per worker turn. Batch known clicks and assertions
+in one browser script. If a workflow needs more fixture setup, keep its exact
+remaining steps in the queue and use the current session to cover the other
+assigned pages. Keep distinct verdicts and complete the deeper workflows in
+follow-up batches. Summarize unique pages, actions exercised and open workflows
+in the batch report.
 
 Choose a representative profile for each shared behavior when the view, available
 actions, visible data scope and effective permissions match. Record which profile

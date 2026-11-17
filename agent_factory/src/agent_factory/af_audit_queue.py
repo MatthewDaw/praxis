@@ -84,7 +84,7 @@ def audit_queue(status, *, now=None):
             "additional_cases": [c["case_id"] for c in status["cases"] if c["case_id"] not in set_originals]}
 
 
-def next_visits(status, queue, limit=3):
+def next_visits(status, queue, limit=6):
     """Combine eligible cases sharing a visit and favor under-exercised surfaces."""
     cases = {c["case_id"]: c for c in status["cases"]}
     evidence = Counter()
@@ -103,4 +103,15 @@ def next_visits(status, queue, limit=3):
             visits[key] = {k: v for k, v in batch.items() if k not in ("case_ids", "state")}
             visits[key]["case_ids"] = []
         visits[key]["case_ids"].extend(batch["case_ids"])
-    return sorted(visits.values(), key=lambda visit: evidence[visit["route"]])[:limit]
+    ordered = sorted(visits.values(), key=lambda visit: (
+        not visit["route"].startswith("/"), evidence[visit["route"]]
+    ))
+    first_by_route = {}
+    followups = []
+    for visit in ordered:
+        route = visit["route"]
+        if route in first_by_route or not route.startswith("/"):
+            followups.append(visit)
+        else:
+            first_by_route[route] = visit
+    return [*first_by_route.values(), *followups][:limit]

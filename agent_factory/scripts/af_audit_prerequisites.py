@@ -155,7 +155,11 @@ def directive(plan: dict) -> str:
         brief['actionable_blocker'] = plan['dependency'].get('actionable_blocker')
     return ('\nPrerequisite handler assignment (canonical, overrides anonymous-first probing):\n'
             + json.dumps(brief, sort_keys=True) + '\n'
-            'Work from next_batches in order. Batch compatible actions on one visit, preserving distinct verdicts. Select runnable original IDs from this assignment. Reconsider blocked originals when '
+            'Execute a multi-page sweep from next_batches using prepared profiles. Batch known actions and '
+            'assertions in one script. Check ordinary interactions on each reachable page before '
+            'deepening a single workflow. Save verified results and queue any remaining required '
+            'steps with evidence. A slow or complex action should not hold the other pages. '
+            'Reconsider blocked originals when '
             'identity_available=true; verify real authentication and execute the missing behavior. '
             'Do not revisit deferred protected routes anonymously or add public-control variants '
             'to work around a shared missing prerequisite. One missing dependency does not prove '

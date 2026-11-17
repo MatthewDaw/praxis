@@ -41,3 +41,15 @@ def test_next_visits_favors_new_pages_and_combines_pending_and_retry():
               "queue_deferrals": {"identity": []}, "scheduling_assignments": {"D": {"status": "reserved"}}}}
     visits = next_visits(status, audit_queue(status))
     assert [v["case_ids"] for v in visits] == [["C"], ["A", "B"]]
+
+
+def test_next_visits_gives_each_reachable_page_a_slot_before_role_followups():
+    from agent_factory.af_audit_queue import next_visits
+    scenarios = [("A", "/a", "admin"), ("B", "/a", "coach"),
+                 ("C", "all", "any"), ("D", "/b", "admin")]
+    status = {"cases": [{"case_id": i, "initial": {"status": "not_run"},
+                         "scenario": {"route": route, "role": role}}
+                        for i, route, role in scenarios],
+              "run_meta": {"inventory_ids": list("ABCD"), "initial_build": "one"}}
+    assert [v["case_ids"] for v in next_visits(status, audit_queue(status))] == [
+        ["A"], ["D"], ["B"], ["C"]]
