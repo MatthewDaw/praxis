@@ -135,7 +135,14 @@ class Audit:
 
     def check(self, case_id: str) -> dict:
         """Call before browser execution; return prior evidence for covered cases."""
+        return self.check_many([case_id])[0]
+
+    def check_many(self, case_ids: list[str]) -> list[dict]:
         status = self.status()
+        return [self._checked_case(status, case_id) for case_id in case_ids]
+
+    @staticmethod
+    def _checked_case(status: dict, case_id: str) -> dict:
         phase = status["phase"]
         require(phase in {"audit", "reaudit"}, "browser checks only run during audit phases")
         matches = [c for c in status["cases"] + status["regression_neighbors"] if c["case_id"] == case_id]
@@ -403,7 +410,7 @@ def main(argv: list[str] | None = None) -> int:
     reconcile = sub.add_parser("reconcile")
     reconcile.add_argument("--input", required=True, help="JSON object with original inventory and links")
     check = sub.add_parser("check")
-    check.add_argument("--case", required=True)
+    check.add_argument("--case", required=True, nargs="+", help="one or more case IDs sharing a single ledger read")
     record = sub.add_parser("record")
     record.add_argument("--case", required=True)
     record.add_argument("--input", required=True)
@@ -425,7 +432,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "reconcile":
             output = audit.reconcile(data["inventory"], data["links"])
         elif args.command == "check":
-            output = audit.check(args.case)
+            checks = audit.check_many(args.case)
+            output = checks[0] if len(checks) == 1 else checks
         elif args.command == "record":
             output = audit.record(args.case, data)
         elif args.command == "advance":

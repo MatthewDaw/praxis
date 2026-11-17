@@ -52,8 +52,16 @@ viewport and fixture state. In one browser context, inspect the page once and
 exercise the pending behaviors that share those prerequisites. Save distinct
 verdicts and evidence references for each case. Revisit for a named requirement
 such as reload persistence, a different permission, or a failure reproduction.
-Generate reusable tests from the same session; run them together when needed
-rather than replaying the page for each control during discovery.
+For routine controls, open the page in a prepared profile, enumerate visible
+actions once, click each applicable control and observe its specific effect
+(dialog, navigation, filter, validation or saved state). Exercise controls
+revealed by those clicks. Keep one compact interaction log with the observed
+outcome per action and shared evidence references. Preserve failures, console
+errors and meaningful coverage gaps. Continue to another page when a deeper
+workflow needs a separate fixture. Use the full planner/generator/healer loop for
+reproducible failures or complex workflows. Reuse the established browser setup
+and session for routine actions without generating or replaying a test for each.
+Summarize unique pages, actions exercised and open workflows in the batch report.
 
 Choose a representative profile for each shared behavior when the view, available
 actions, visible data scope and effective permissions match. Record which profile
@@ -68,7 +76,7 @@ after the grant and after revocation. Verify the expected outcome at each step,
 including the applicable team or tenant scope and whether any change persisted.
 Keep evidence for each boundary and record missing fixture identities as blockers.
 
-Use `check --case ID` before executing. Reuse a same-build verdict and inspect
+Check all selected IDs together with `check --case ID1 ID2` before executing. Reuse a same-build verdict and inspect
 `linked_evidence` to plan only the steps still missing from an original case.
 For a new variant, set `parent_id`, a stable `behavior_id` for the action, and the
 role, sport (or `n/a`), and viewport. For a genuinely new control, describe it

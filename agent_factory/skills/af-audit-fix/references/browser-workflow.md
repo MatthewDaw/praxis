@@ -45,6 +45,8 @@ Test the MCP initialize/tools-list handshake before claiming the agents are read
 both engines' generated definitions and its real MCP server (92 tools); that
 handshake alone is infrastructure evidence, not proof any application case passed.
 
+Initialize and verify this tooling once per workspace and version. A normal page sweep uses direct Playwright clicks and observed outcomes in a shared browser context. Reserve generated regression runs and healer reviews for failures and complex workflows.
+
 The planner interacts with the real deployed app using dedicated test identities
 and writes a scenario plan with observable outcomes. The generator verifies the
 selectors live, creates executable tests from that plan and runs them. The healer
@@ -53,7 +55,7 @@ from application defects. Keep original failure artifacts and expectations.
 
 For each browser session attach console, pageerror, requestfailed and relevant
 response listeners before navigation; use a fresh browser context per identity.
-Capture screenshots and a trace around the actual interactions. Inspect rendered
+Share evidence across a page visit. Capture a screenshot or trace when a failure, visual assertion or complex workflow needs it. Inspect rendered
 controls after application readiness; select by role/label where possible. For
 long polling or SSE use a visible ready-state assertion rather than relying only
 on networkidle. Test actions, resulting state and reload persistence. API setup

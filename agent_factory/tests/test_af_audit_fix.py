@@ -288,3 +288,15 @@ def test_external_dependency_change_prevents_freezing_unchanged_blocker(audit):
                actual='New issued reset link works, outbound inbox delivery still unverified')
     audit.record('A', new)
     freeze(audit)
+
+
+def test_batch_check_reuses_one_status_snapshot(audit, monkeypatch):
+    status = audit.status()
+    reads = []
+    def read():
+        reads.append(True)
+        return status
+    monkeypatch.setattr(audit, "status", read)
+    checks = audit.check_many(["B", "A"])
+    assert [c["case_id"] for c in checks] == ["B", "A"]
+    assert len(reads) == 1
