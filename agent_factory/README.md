@@ -214,8 +214,8 @@ What happens (every slice follows **FIND→CLAIM→RESOLVE→BUILD→VERIFY→FI
 
 ## The skills
 
-Claude Code activates these from intent (or invoke by name, e.g. `af-plan`). There are **six**
-invocable skills listed here:
+Claude Code activates these from intent (or invoke by name, e.g. `af-plan`). Codex
+can use the same skill directories from `~/.agents/skills`. The main entry points are:
 
 | Skill | Role |
 |---|---|
@@ -223,6 +223,7 @@ invocable skills listed here:
 | **af-wireframe** | Sibling of af-plan — one-shot PRD → complete, clickable HTML wireframes, self-audited coverage; hands surfaces to af-intake-plan. |
 | **af-intake-plan** | The single write-path: admit + harden requirements in Praxis **and** run all validation — the cold-eyes audit (adversarial challenge, underspecification routing, technical + **test-strategy** sweep, near-dup reconciliation), the planning checks, and the plan-finalization panel. Includes an **amend mode** for adding validation/planning checks to an existing plan. |
 | **af-build** | The build loop — claim a ticket, resolve+pin its checks, build, verify against **external** signals only, deploy — and always run validation + the work-review panel. The "go work unfinished" entry point. |
+| **af-audit-fix** | Audit a deployed website using Anthropic webapp-testing and Playwright Test Agents, track evidence and coverage in Praxis, fix locally, deploy and re-audit failures. Supports Codex and Claude with managed remote execution. |
 | **af-rapid-queue** | Rapid drive-by intake — capture a mid-flight "also fix X" as an ordinary incomplete ticket and resume the interrupted task, without investigating or building it. Spools locally first (`hooks/rapid_queue.py`) so a request cannot be lost before its Praxis write lands; the drain is af-build's, unchanged. |
 | **af-seed-ml-supervise** | Make ONE canonical `ml_registry` campaign runnable on its actual execution host: inventory adapter-backed data, freeze the judge, build the project lifecycle adapter, register and reproduce the baseline, seed the nine-axis IDEA set, deploy the durable revision, and prove a campaign-job smoke plus portfolio handoff. |
 

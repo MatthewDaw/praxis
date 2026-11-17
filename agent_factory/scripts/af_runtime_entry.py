@@ -121,6 +121,12 @@ def admit(config: dict, kind: str, env: dict[str, str]) -> None:
 
 
 def maintenance(config: dict, env: dict[str, str]) -> int:
+    if config['mode'] == 'audit':
+        # Audit conversations are bounded foreground turns. Never apply ticket-worker
+        # retirement or adoption to them; the audit supervisor owns phase continuation.
+        from af_audit_supervise import status
+        print(json.dumps(status(config, env)))
+        return 0
     scripts = Path(config['factory']) / 'scripts'
     for name in ('af_continue_idle_worker.py', 'af_retire_finished.py'):
         subprocess.run([config['python'], str(scripts / name), '--project', config['project'],
@@ -179,6 +185,10 @@ def main() -> int:
     elif role == 'maintenance':
         return maintenance(config, env)
     elif role == 'observe':
+        if config['mode'] == 'audit':
+            from af_audit_supervise import status
+            print(json.dumps(status(config, env)))
+            return 0
         import _praxis as praxis
         from af_worker_metrics import observe
         facts = praxis.facts_by(category='requirement', space=config['project'],
@@ -187,6 +197,9 @@ def main() -> int:
         return 0
     elif role in {'supervise', 'check'}:
         scripts = Path(config['factory']) / 'scripts'
+        if config['mode'] == 'audit':
+            from af_audit_supervise import preflight, supervise
+            return preflight(config, env) if role == 'check' else supervise(config, env)
         driver = ['bash', str(scripts / 'af-ticket-loop.sh')]
         if role == 'check':
             env['AF_RUNTIME_PREFLIGHT'] = '1'

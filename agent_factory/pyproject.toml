@@ -33,6 +33,7 @@ dependencies = [
 af-retro = "agent_factory.af_retro:main"
 af-ingest = "agent_factory.ingestion_api:main"
 af-taxonomy = "agent_factory.failure_taxonomy:main"
+af-audit-fix = "agent_factory.af_audit_fix:main"
 
 # The wireframe-conformance BROWSER gate (wireframe_browser_check.py) needs Playwright — the Python
 # package here plus a one-time `python -m playwright install chromium` (~150 MB) that the module

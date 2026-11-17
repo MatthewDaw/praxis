@@ -1,0 +1,237 @@
+import copy
+import hashlib
+
+import pytest
+
+from agent_factory.af_audit_fix import Audit
+
+
+_ARTIFACT = {}
+
+
+@pytest.fixture(autouse=True)
+def retained_evidence(tmp_path):
+    path = tmp_path / "team.png"
+    path.write_bytes(b"actual browser screenshot bytes")
+    _ARTIFACT.clear()
+    _ARTIFACT.update(uri=path.as_uri(), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+
+
+class MemoryPraxis:
+    def __init__(self):
+        self.rows = {}
+        self.next_id = 0
+
+    def ensure_space(self, *args, **kwargs):
+        pass
+
+    def facts_by(self, category, meta, state, space, snapshot):
+        return copy.deepcopy([r for (s, n, _), r in self.rows.items() if s == space and n == snapshot
+                              and all(r['meta'].get(k) == v for k, v in meta.items())])
+
+    def _request(self, method, path, body, space, snapshot):
+        assert (method, path) == ('POST', '/insights')
+        assert body['raw'] is True  # no semantic dedup of similarly named distinct cases
+        self.next_id += 1
+        row = {'id': str(self.next_id), 'meta': copy.deepcopy(body['meta'])}
+        self.rows[(space, snapshot, row['id'])] = row
+        return {'id': row['id']}
+
+    def patch_meta(self, cid, data, space, snapshot):
+        self.rows[(space, snapshot, cid)]['meta'].update(copy.deepcopy(data))
+
+
+def evidence(status='passed', build='sha1'):
+    return {'status': status, 'build': build, 'role': 'admin', 'route': '/teams',
+            'steps': ['Click add team', 'Enter a name', 'Save', 'Reload'],
+            'expected': 'Team persists', 'actual': 'Team persists' if status == 'passed' else 'Save returns 500',
+            'evidence': [copy.deepcopy(_ARTIFACT)],
+            'viewport': '1280x720', 'console': [], 'network': [], 'cleanup': 'No mutations',
+            **({'blocker': 'Missing payment sandbox'} if status == 'blocked' else {})}
+
+
+@pytest.fixture
+def audit():
+    a = Audit('sports', 'run-1', MemoryPraxis())
+    a.init({'scenarios': [{'id': 'A', 'title': 'Create team'}, {'id': 'B', 'title': 'Read team'}]},
+           'https://example.test', 'sha1')
+    return a
+
+
+def freeze(a):
+    a.advance({'observed_build': 'sha1', 'discovery_reconciled': True, 'discovery_evidence': 'trace:index'})
+
+
+def deploy(a):
+    a.advance({'observed_build': 'sha1', 'fixes': {'A': {'commit': 'sha2', 'validation': 'test:regression'}}})
+    a.advance({'observed_build': 'sha1', 'deployment': {'target': 'https://example.test', 'build': 'sha2',
+                'healthy': True, 'migrations_verified': True, 'evidence': 'release:sha2'}})
+
+
+def test_no_page_load_pass_or_incomplete_freeze(audit):
+    with pytest.raises(ValueError, match='unexecuted'):
+        freeze(audit)
+    bad = evidence()
+    bad.pop('steps')
+    with pytest.raises(ValueError, match='steps'):
+        audit.record('A', bad)
+    assert audit.status()['counts']['not_run'] == 2
+
+
+def test_build_drift_and_evidence_hash_required(audit):
+    with pytest.raises(ValueError, match='drift'):
+        audit.record('A', evidence(build='other'))
+    bad = evidence()
+    bad['evidence'][0]['sha256'] = 'fake'
+    with pytest.raises(ValueError, match='SHA256'):
+        audit.record('A', bad)
+
+
+def test_frozen_failures_and_deployment_gate(audit):
+    audit.record('A', evidence('failed'))
+    audit.record('B', evidence())
+    freeze(audit)
+    assert audit.status()['failed_ids'] == ['A']
+    with pytest.raises(ValueError, match='only writable'):
+        audit.record('A', evidence())
+    with pytest.raises(ValueError, match='every frozen failure'):
+        audit.advance({'observed_build': 'sha1', 'fixes': {}})
+    deploy(audit)
+    with pytest.raises(ValueError, match='frozen initial failures'):
+        audit.record('B', evidence(build='sha2'))
+    audit.record('A', evidence('failed', 'sha2'))
+    with pytest.raises(ValueError, match='must pass'):
+        audit.advance({'observed_build': 'sha2', 'cleanup_verified': True, 'cleanup_evidence': 'cleanup:all'})
+    audit.record('A', evidence(build='sha2'))
+    audit.advance({'observed_build': 'sha2', 'cleanup_verified': True, 'cleanup_evidence': 'cleanup:all'})
+    assert audit.status()['phase'] == 'complete'
+    assert audit.one('case:A')['meta']['initial']['status'] == 'failed'
+    assert len(audit.one('case:A')['meta']['reaudit_attempts']) == 2
+
+
+def test_blocked_never_green_and_partial_completion(audit):
+    audit.record('A', evidence('failed'))
+    audit.record('B', evidence('blocked'))
+    freeze(audit)
+    deploy(audit)
+    audit.record('A', evidence(build='sha2'))
+    audit.advance({'observed_build': 'sha2', 'cleanup_verified': True, 'cleanup_evidence': 'cleanup:all'})
+    assert audit.status()['phase'] == 'partial'
+    assert not audit.status()['full_coverage']
+    assert audit.status()['counts']['blocked'] == 1
+
+
+def test_isolated_run_scope_and_retry_init(audit):
+    other = Audit('foreign', 'run-1', audit.client)
+    with pytest.raises(ValueError, match='found 0'):
+        other.status()
+    status = audit.init({'scenarios': [{'id': 'A', 'title': 'Create team'}, {'id': 'B', 'title': 'Read team'}]},
+                       'https://example.test', 'sha1')
+    assert status['counts']['not_run'] == 2
+    with pytest.raises(ValueError, match='different inventory'):
+        audit.init({'scenarios': [{'id': 'C'}]}, 'https://example.test', 'sha1')
+
+
+def test_discovered_cases_freeze_and_credential_rejection(audit):
+    audit.add_case({'id': 'C', 'title': 'Newly discovered control'})
+    bad = evidence()
+    bad['actual'] = 'password=DoNotUpload123'
+    with pytest.raises(ValueError, match='credentials'):
+        audit.record('A', bad)
+    for case in ['A', 'B', 'C']:
+        audit.record(case, evidence())
+    freeze(audit)
+    with pytest.raises(ValueError, match='frozen'):
+        audit.add_case({'id': 'D'})
+
+
+def test_cleanup_and_healthy_migrations_required(audit):
+    audit.record('A', evidence('failed'))
+    audit.record('B', evidence())
+    freeze(audit)
+    audit.advance({'observed_build': 'sha1', 'fixes': {'A': {'commit': 'sha2', 'validation': 'test'}}})
+    with pytest.raises(ValueError, match='migration'):
+        audit.advance({'observed_build': 'sha1', 'deployment': {'build': 'sha2', 'healthy': True,
+                                                             'target': 'https://example.test'}})
+
+
+def test_failed_reaudit_returns_to_fix_and_neighbors_cannot_hide_failures(audit):
+    audit.record('A', evidence('failed'))
+    audit.record('B', evidence())
+    freeze(audit)
+    deploy(audit)
+    audit.add_case({'id': 'NEIGHBOR', 'regression_for': 'A', 'title': 'List teams still works'})
+    with pytest.raises(ValueError, match='cannot replace'):
+        audit.add_case({'id': 'A', 'regression_for': 'A'})
+    audit.record('A', evidence('failed', 'sha2'))
+    audit.record('NEIGHBOR', evidence(build='sha2'))
+    audit.advance({'observed_build': 'sha2', 'retry_fixes': True})
+    assert audit.status()['phase'] == 'fix'
+    audit.advance({'observed_build': 'sha2', 'fixes': {'A': {'commit': 'sha3', 'validation': 'test:retry'}}})
+    audit.advance({'observed_build': 'sha2', 'deployment': {'target': 'https://example.test', 'build': 'sha3',
+                  'healthy': True, 'migrations_verified': True, 'evidence': 'release:sha3'}})
+    audit.record('A', evidence(build='sha3'))
+    with pytest.raises(ValueError, match='adjacent'):
+        audit.advance({'observed_build': 'sha3', 'cleanup_verified': True, 'cleanup_evidence': 'cleanup:all'})
+    audit.record('NEIGHBOR', evidence(build='sha3'))
+    audit.advance({'observed_build': 'sha3', 'cleanup_verified': True, 'cleanup_evidence': 'cleanup:all'})
+    assert audit.status()['phase'] == 'complete'
+    assert audit.one('run')['meta']['failed_ids'] == ['A']
+    assert audit.one('run')['meta']['deployment_history'][0]['build'] == 'sha2'
+
+
+def test_wrong_origin_and_expanded_role_sport_viewport_rejected(audit):
+    audit.add_case({'id': 'TUPLE', 'required_role': 'official', 'required_sport': 'basketball',
+                    'required_viewport': '1280x720'})
+    wrong = evidence()
+    wrong['route'] = 'https://unrelated.example/teams'
+    with pytest.raises(ValueError, match='origin'):
+        audit.record('A', wrong)
+    with pytest.raises(ValueError, match='role'):
+        audit.record('TUPLE', evidence())
+    wrong = evidence()
+    wrong['role'] = 'official'
+    wrong['sport'] = 'baseball'
+    with pytest.raises(ValueError, match='sport'):
+        audit.record('TUPLE', wrong)
+    wrong['sport'] = 'basketball'
+    wrong['viewport'] = '320x480'
+    with pytest.raises(ValueError, match='viewport'):
+        audit.record('TUPLE', wrong)
+    wrong['viewport'] = '1280x720'
+    audit.record('TUPLE', wrong)
+
+
+def test_evidence_bytes_exist_and_hash_matches(audit, tmp_path):
+    wrong = evidence()
+    wrong['evidence'][0]['uri'] = (tmp_path / 'nonexistent.png').as_uri()
+    with pytest.raises(ValueError, match='does not exist'):
+        audit.record('A', wrong)
+    wrong = evidence()
+    wrong['evidence'][0]['sha256'] = 'b' * 64
+    with pytest.raises(ValueError, match='mismatch'):
+        audit.record('A', wrong)
+    wrong = evidence()
+    wrong['evidence'][0]['uri'] = 'https://example.test/evidence.png'
+    with pytest.raises(ValueError, match='evidence_path'):
+        audit.record('A', wrong)
+    wrong['evidence'][0]['evidence_path'] = str(tmp_path / 'bytes.png')
+    (tmp_path / 'bytes.png').write_bytes(b'actual browser screenshot bytes')
+    audit.record('A', wrong)
+
+
+def test_report_contains_reaudit_deployment_and_cleanup(audit):
+    audit.record('A', evidence('failed'))
+    audit.record('B', evidence())
+    freeze(audit)
+    deploy(audit)
+    audit.add_case({'id': 'NEIGHBOR', 'regression_for': 'A', 'title': 'List teams'})
+    audit.record('A', evidence(build='sha2'))
+    audit.record('NEIGHBOR', evidence(build='sha2'))
+    audit.advance({'observed_build': 'sha2', 'cleanup_verified': True, 'cleanup_evidence': 'cleanup:all'})
+    report = audit.report()
+    assert 'Re-audit attempt 1: passed' in report
+    assert 'Adjacent regression for: A' in report
+    assert 'release:sha2' in report
+    assert 'cleanup:all' in report
+    assert _ARTIFACT['sha256'] in report

@@ -174,6 +174,7 @@ KillMode=control-group
 TimeoutStopSec=90
 Restart=on-failure
 RestartSec=30
+{('RestartPreventExitStatus=78' if config.get('mode', 'build') == 'audit' else '')}
 [Install]
 WantedBy=default.target
 ''',
@@ -239,6 +240,13 @@ def install_locked(values: dict, source: Path, *, unit_dir: Path | None,
     if not identity.get('PRAXIS_API_KEY') or not identity.get('PRAXIS_ORG'):
         raise ValueError('private environment needs this project\'s existing Praxis key and org')
     config = settings(values)
+    if config['mode'] == 'audit':
+        prompt = Path(config['audit_prompt_file']).read_text()
+        if not prompt.strip():
+            raise ValueError('audit prompt must not be empty')
+        prompt_path = runtime / 'audit-assignment.md'
+        private_write(prompt_path, prompt)
+        config['audit_prompt_file'] = str(prompt_path)
     if config['application_env_file'] and not config['fixture_defaults_file']:
         config['fixture_defaults_file'] = config['application_env_file']
         if not config['fixture_default_keys']:
@@ -295,8 +303,10 @@ def main() -> int:
     if args.render_only and args.start:
         parser.error('--render-only cannot start a service')
     values = {**host_defaults(), **(json.loads(args.profile.read_text()) if args.profile else {})}
+    runtime_name = (args.project + '-audit-' + str(values.get('audit_run', ''))
+                    if values.get('mode') == 'audit' else args.project)
     values.update(project=args.project, worktree=str(args.worktree.resolve()), python=str(Path(args.python).absolute()),
-                  runtime=str((args.runtime or Path.home() / '.praxis/runtimes' / args.project).resolve()))
+                  runtime=str((args.runtime or Path.home() / '.praxis/runtimes' / runtime_name).resolve()))
     for key in ('environment_file', 'application_env_file', 'claude_config_dir', 'pg_port', 'redis_port'):
         value = getattr(args, key)
         if value is not None:

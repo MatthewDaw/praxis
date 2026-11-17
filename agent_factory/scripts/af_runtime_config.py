@@ -23,6 +23,7 @@ EXECUTION_POLICY = (
     'per ticket without using time limits to weaken required coverage.'
 )
 DEFAULTS = {
+    'mode': 'build',
     'backend': 'sonnet', 'model': 'sonnet', 'batch_max': 8,
     'memory_high_gib': 8, 'memory_max_gib': 12,
     'unit_memory_gib': 3, 'build_memory_gib': 6,
@@ -35,6 +36,8 @@ DEFAULTS = {
     'fixture_default_keys': [], 'fixture_defaults_file': None,
     'application_env_file': None,
     'scoped_types_commands': ['check-ticket-types.ts'],
+    'audit_phases': ['audit', 'reaudit'], 'audit_wait_phases': ['fix', 'deploy'],
+    'audit_batch_timeout_s': 1800, 'audit_no_progress_limit': 3,
 }
 
 
@@ -47,6 +50,23 @@ def settings(values: dict) -> dict:
         raise ValueError('project must be a bare Praxis project name')
     if result['backend'] not in {'sonnet', 'codex'}:
         raise ValueError('managed runtime supports sonnet or codex')
+    if result['mode'] not in {'build', 'audit'}:
+        raise ValueError('runtime mode must be build or audit')
+    if result['mode'] == 'audit':
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,95}', result.get('audit_run', '')):
+            raise ValueError('audit_run must name an explicit Praxis run')
+        if not Path(result.get('audit_prompt_file', '')).is_absolute():
+            raise ValueError('audit_prompt_file must be an absolute path')
+        phases = set(result['audit_phases'])
+        waits = set(result['audit_wait_phases'])
+        if not phases or not phases <= {'audit', 'fix', 'deploy', 'reaudit'} or not waits <= {'audit', 'fix', 'deploy', 'reaudit'} or phases & waits:
+            raise ValueError('audit phases and wait phases must be explicit and disjoint')
+        probe = result.get('audit_browser_probe')
+        if not isinstance(probe, list) or not probe or not all(isinstance(x, str) and x for x in probe) or not Path(probe[0]).is_absolute():
+            raise ValueError('audit_browser_probe must be an argv array with an absolute executable')
+        for key in ('audit_batch_timeout_s', 'audit_no_progress_limit'):
+            if not isinstance(result[key], int) or isinstance(result[key], bool) or result[key] <= 0:
+                raise ValueError(f'{key} must be a positive integer')
     for key in ('batch_max', 'memory_high_gib', 'memory_max_gib', 'unit_memory_gib',
                 'build_memory_gib', 'host_available_gib', 'memory_margin_gib'):
         if not isinstance(result[key], int) or isinstance(result[key], bool) or result[key] <= 0:
@@ -62,8 +82,9 @@ def settings(values: dict) -> dict:
             raise ValueError(f'{key} must be an absolute path')
     if result['backend'] == 'sonnet' and not result.get('claude_config_dir'):
         raise ValueError('Sonnet requires an existing authenticated Claude config directory')
-    result['service'] = f'praxis-af-{project}.service'
-    result['slice'] = f'praxis-af-{project}.slice'
+    unit_project = project + '-audit-' + result['audit_run'] if result['mode'] == 'audit' else project
+    result['service'] = f'praxis-af-{unit_project}.service'
+    result['slice'] = f'praxis-af-{unit_project}.slice'
     result['session_prefix'] = 'af-' + Path(result['worktree']).name
     return result
 

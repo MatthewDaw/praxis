@@ -19,6 +19,7 @@ from af_launch_prompt import prepare
 from af_retire_claude import context, idle
 from af_worker_metrics import measure
 from af_wsl_host import powershell_command
+import af_audit_supervise as audit_supervisor
 
 spec = importlib.util.spec_from_file_location('runtime_setup', SCRIPTS / 'af-runtime-setup.py')
 setup = importlib.util.module_from_spec(spec)
@@ -97,6 +98,100 @@ def test_generated_node_guard_rejects_census_before_executing_it(tmp_path, facto
                             capture_output=True, text=True)
     assert result.returncode == 64
     assert 'No check ran or passed' in result.stderr
+
+
+def audit_values(tmp_path, backend='codex'):
+    raw = values(tmp_path)
+    prompt = tmp_path / 'assignment.md'
+    prompt.write_text('Audit the assigned deployed target with isolated fixtures.')
+    return {**raw, 'mode': 'audit', 'backend': backend, 'model': 'existing-model',
+            'audit_run': 'test-run', 'audit_prompt_file': str(prompt),
+            'audit_phases': ['audit', 'reaudit'], 'audit_wait_phases': ['fix', 'deploy'],
+            'audit_browser_probe': [sys.executable, '-c', 'pass']}
+
+
+@pytest.mark.parametrize('backend,engine', [('codex', 'codex'), ('sonnet', 'claude')])
+def test_audit_install_uses_shared_runtime_and_engine_without_forcing_model(tmp_path, factory, backend, engine):
+    raw = audit_values(tmp_path, backend)
+    config = setup.install(raw, factory, pin_project=False)
+    command = audit_supervisor.agent_command(config, tmp_path / 'prompt', tmp_path / 'output')
+    assert command[command.index('--engine') + 1] == engine
+    assert command[command.index('--cli-path') + 1] == str(Path(config['runtime']) / 'bin' / engine)
+    assert '--model' not in command
+    assert config['model'] == 'existing-model'
+    assert config['service'] == 'praxis-af-alpha-audit-test-run.service'
+    assert Path(config['audit_prompt_file']).read_text() == Path(raw['audit_prompt_file']).read_text()
+    assert Path(config['audit_prompt_file']).stat().st_mode & 0o077 == 0
+    assert 'RestartPreventExitStatus=78' in setup.units(config)[config['service']]
+
+
+def test_audit_profile_refuses_ambiguous_phase_and_shell_probe(tmp_path):
+    raw = {**audit_values(tmp_path), 'factory': '/factory', 'environment_file': '/private/env'}
+    with pytest.raises(ValueError, match='disjoint'):
+        settings({**raw, 'audit_wait_phases': ['audit']})
+    with pytest.raises(ValueError, match='argv array'):
+        settings({**raw, 'audit_browser_probe': 'echo success'})
+    with pytest.raises(ValueError, match='audit_run'):
+        settings({**raw, 'audit_run': '../other-run'})
+
+
+def test_audit_supervisor_does_not_treat_successful_process_as_coverage(tmp_path, monkeypatch):
+    config = audit_values(tmp_path)
+    config.update(factory='/factory', audit_no_progress_limit=2)
+    canonical = {'project': 'alpha', 'run': 'test-run', 'phase': 'audit', 'counts': {'not_run': 2}}
+    monkeypatch.setattr(audit_supervisor, 'status', lambda *_: canonical)
+    turns = []
+    monkeypatch.setattr(audit_supervisor, 'run_turn', lambda *args: turns.append(args) or 0)
+    assert audit_supervisor.supervise(config, {'PRAXIS_ORG': 'test-org'}, sleep=lambda _: None) == 78
+    assert len(turns) == 2
+    assert canonical['counts']['not_run'] == 2
+
+
+def test_audit_supervisor_waits_for_local_fix_then_reaudits(tmp_path, monkeypatch):
+    config = audit_values(tmp_path)
+    config.update(factory='/factory', audit_no_progress_limit=2)
+    states = iter([{'phase': 'fix'}, {'phase': 'deploy'}, {'phase': 'reaudit'},
+                   {'phase': 'complete'}, {'phase': 'complete'}])
+    monkeypatch.setattr(audit_supervisor, 'status', lambda *_: next(states))
+    turns, waits = [], []
+    monkeypatch.setattr(audit_supervisor, 'run_turn', lambda *args: turns.append(args[3]) or 0)
+    assert audit_supervisor.supervise(config, {'PRAXIS_ORG': 'test-org'}, sleep=waits.append) == 0
+    assert turns == ['reaudit']
+    assert waits == [30, 30]
+
+
+def test_audit_status_unavailable_fails_closed(monkeypatch):
+    config = {'python': sys.executable, 'project': 'alpha', 'audit_run': 'test-run', 'worktree': '/tmp'}
+    monkeypatch.setattr(audit_supervisor.subprocess, 'run', lambda *_, **__: SimpleNamespace(returncode=2))
+    with pytest.raises(RuntimeError, match='no audit completion'):
+        audit_supervisor.status(config, {'PRAXIS_ORG': 'test-org'})
+
+
+def test_audit_preflight_requires_actual_file_tools_after_model_exit(tmp_path, monkeypatch):
+    config = audit_values(tmp_path)
+    monkeypatch.setattr(audit_supervisor, 'status', lambda *_: {'phase': 'audit'})
+    monkeypatch.setattr(audit_supervisor.subprocess, 'run', lambda *_, **__: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(audit_supervisor, 'run_turn', lambda *_: 0)
+    with pytest.raises(RuntimeError, match='read/write preflight failed'):
+        audit_supervisor.preflight(config, {'PRAXIS_ORG': 'test-org'})
+
+
+def test_audit_preflight_accepts_verified_file_roundtrip_and_browser(tmp_path, monkeypatch):
+    import re
+    config = audit_values(tmp_path)
+    monkeypatch.setattr(audit_supervisor, 'status', lambda *_: {'phase': 'audit'})
+    calls = []
+    def turn(_config, env, prompt, label):
+        source = re.search(r'Read (.+?) using a file tool', prompt)[1]
+        destination = re.search(r'contents to (.+?) using a file tool', prompt)[1]
+        Path(destination).write_text(Path(source).read_text())
+        calls.append((env['AF_RUNTIME_PREFLIGHT'], label))
+        return 0
+    monkeypatch.setattr(audit_supervisor, 'run_turn', turn)
+    # Executes the configured harmless local probe as a real child process.
+    assert audit_supervisor.preflight(config, {'PRAXIS_ORG': 'test-org'}) == 0
+    assert calls == [('1', 'preflight')]
+    assert not list(Path(config['worktree']).glob('.af-audit-probe-*'))
 
 
 def test_live_worktree_lock_prevents_any_repinning(tmp_path, factory):

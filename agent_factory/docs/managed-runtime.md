@@ -69,6 +69,49 @@ Starting also enables lingering for the current Linux user without an interactiv
 password request, so closing SSH does not tear down the user manager. This is a
 per-user service-lifetime setting; no global WSL configuration is changed.
 
+## Deployed website audits
+
+`af-audit-fix` uses the same installer and resource scopes with `"mode": "audit"`
+in its static profile. Select `"backend": "codex"` or `"backend": "sonnet"`
+(Claude); the audit adapter does not override the selected CLI's model defaults.
+An audit profile also supplies:
+
+```json
+{
+  "mode": "audit",
+  "backend": "codex",
+  "audit_run": "release-audit-20261117",
+  "audit_prompt_file": "/private/audit-assignment.md",
+  "audit_browser_probe": ["/usr/bin/node", "/private/browser-probe.mjs"],
+  "audit_phases": ["audit", "reaudit"],
+  "audit_wait_phases": ["fix", "deploy"]
+}
+```
+
+The probe must actually launch the browser, navigate to the intended target and
+assert readiness; it exits nonzero on failure. Use job-owned browser dependencies
+and a configured explicit target. `--start` checks canonical Praxis state, executes
+this probe and verifies a real model turn reading and writing a random scratch
+value before enabling the service. Login status or an agent's printed claim is
+insufficient. Run `bin/af-runtime check` separately for a bounded setup smoke;
+it does not launch the full audit.
+
+The project stays the real Praxis project. Audit units and the default runtime
+directory add `-audit-<run>` so they cannot replace that project's build service.
+For example, `praxis-af-checkout-production-audit-release-audit-20261117.service`.
+Use a separate worktree and private environment file; do not repin a live build.
+The assignment prompt is copied privately into the runtime at installation.
+
+The remote coordinator can own `audit` and `reaudit`, waiting for a separately
+assigned local coordinator to finish `fix` and `deploy` on the same Praxis run.
+The supervisor checks canonical phase after every bounded agent turn; process
+exit zero never passes a case. Three consecutive turns without canonical progress
+stop with exit 78 and require attention, rather than retrying indefinitely. Configure
+`audit_no_progress_limit` and `audit_batch_timeout_s` (default1800 seconds) only
+when the workload warrants it. `complete` and `partial` are reported distinctly;
+a terminal partial run still has untested coverage. An explicit stop retains
+Praxis progress and evidence for a later restart.
+
 ## Existing laptop login
 
 Reuse an authenticated private Claude config directory. No API key is needed. When
