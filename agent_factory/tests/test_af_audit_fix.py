@@ -300,3 +300,11 @@ def test_batch_check_reuses_one_status_snapshot(audit, monkeypatch):
     checks = audit.check_many(["B", "A"])
     assert [c["case_id"] for c in checks] == ["B", "A"]
     assert len(reads) == 1
+
+
+def test_receipt_avoids_full_status_read_after_record(audit, monkeypatch):
+    monkeypatch.setattr(audit, 'status', lambda: pytest.fail("unexpected inventory read"))
+    result = evidence()
+    receipt = audit.record("A", result, receipt=True)
+    assert receipt == {"case_id": "A", "phase": "audit", "build": "sha1", "status": "passed"}
+    assert audit.record("A", result, receipt=True) == receipt

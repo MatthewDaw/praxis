@@ -82,3 +82,25 @@ def audit_queue(status, *, now=None):
             "progress": progress, "eta": eta, "batches": batches,
             "completed_cases": completed_cases,
             "additional_cases": [c["case_id"] for c in status["cases"] if c["case_id"] not in set_originals]}
+
+
+def next_visits(status, queue, limit=3):
+    """Combine eligible cases sharing a visit and favor under-exercised surfaces."""
+    cases = {c["case_id"]: c for c in status["cases"]}
+    evidence = Counter()
+    for case in cases.values():
+        if case["initial"]["status"] == "not_run":
+            continue
+        parent_id = status.get("coverage_links", {}).get(case["case_id"], case["case_id"])
+        parent = cases.get(parent_id, case)
+        evidence[_context(parent["scenario"])[0]] += 1
+    visits = {}
+    for batch in queue["batches"]:
+        if batch["state"] not in ("pending", "retry"):
+            continue
+        key = (batch["route"], tuple(batch["roles"]), batch["sport"], batch["viewport"], batch["fixture_state"])
+        if key not in visits:
+            visits[key] = {k: v for k, v in batch.items() if k not in ("case_ids", "state")}
+            visits[key]["case_ids"] = []
+        visits[key]["case_ids"].extend(batch["case_ids"])
+    return sorted(visits.values(), key=lambda visit: evidence[visit["route"]])[:limit]

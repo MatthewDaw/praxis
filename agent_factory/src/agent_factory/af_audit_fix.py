@@ -231,7 +231,7 @@ class Audit:
                     "console and network observations required (empty arrays mean inspected and clean)")
         require(nonempty(result.get("cleanup")), "cleanup ledger reference or explicit no mutations required")
 
-    def record(self, case_id: str, result: dict) -> dict:
+    def record(self, case_id: str, result: dict, *, receipt: bool = False) -> dict:
         run = self.one("run")["meta"]
         phase = run["phase"]
         require(phase in {"audit", "reaudit"}, "case evidence only writable during audit or reaudit")
@@ -247,8 +247,9 @@ class Audit:
         old = fact["meta"].get(slot, {})
         require(slot == "reaudit" or old.get("status", "not_run") == "not_run" or old.get("status") == "blocked" or old == result,
                 "recorded result is immutable; use a new run for another execution")
+        acknowledgment = {"case_id": case_id, "phase": phase, "status": result["status"], "build": result["build"]}
         if old == result:
-            return self.status()
+            return acknowledgment if receipt else self.status()
         if slot == "reaudit" and old.get("build") == result["build"] and old.get("status") in {"passed", "failed"}:
             require(nonempty(result.get("rerun_reason")), "same-build re-audit requires rerun_reason")
         # Credentials must remain in private fixture bundles, never the evidence ledger.
@@ -257,7 +258,7 @@ class Audit:
         if slot == "reaudit":
             changes["reaudit_attempts"] = fact["meta"].get("reaudit_attempts", []) + [copy.deepcopy(result)]
         self.patch(fact, changes)
-        return self.status()
+        return acknowledgment if receipt else self.status()
 
     def advance(self, gate: dict) -> dict:
         fact = self.one("run")
@@ -329,16 +330,20 @@ class Audit:
             raise ValueError(f"cannot advance phase {phase}")
         return self.status()
 
-    def _cases(self, run: dict) -> list[dict]:
-        facts = self.facts()
+    def _cases(self, run: dict, facts=None) -> list[dict]:
+        if facts is None:
+            facts = self.facts()
         cases = [f["meta"] for f in facts if f["meta"]["audit_key"].startswith("case:")]
         require(len(cases) == len(run["case_ids"]) and {c["case_id"] for c in cases} == set(run["case_ids"]),
                 "inventory import incomplete or inconsistent")
         return sorted(cases, key=lambda c: c["case_id"])
 
     def status(self) -> dict:
-        run = self.one("run")["meta"]
-        cases = self._cases(run)
+        facts = self.facts()
+        runs = [f["meta"] for f in facts if f["meta"]["audit_key"] == "run"]
+        require(len(runs) == 1, f"expected exactly one run fact; found {len(runs)}")
+        run = runs[0]
+        cases = self._cases(run, facts)
         counts = {s: sum(c["initial"]["status"] == s for c in cases) for s in ["not_run", *sorted(TERMINAL)]}
         original = set(run.get("inventory_ids", []))
         links = dict(run.get("coverage_links", {}))
@@ -360,7 +365,7 @@ class Audit:
                 "coverage_links": links,
                 "full_coverage": counts["blocked"] == 0 and counts["not_run"] == 0,
                 "failed_ids": run.get("failed_ids", []), "run_meta": run, "cases": cases,
-                "regression_neighbors": [f["meta"] for f in self.facts() if f["meta"]["audit_key"].startswith("neighbor:")]}
+                "regression_neighbors": [f["meta"] for f in facts if f["meta"]["audit_key"].startswith("neighbor:")]}
 
     def report(self) -> str:
         status = self.status()
@@ -412,6 +417,7 @@ def main(argv: list[str] | None = None) -> int:
     check = sub.add_parser("check")
     check.add_argument("--case", required=True, nargs="+", help="one or more case IDs sharing a single ledger read")
     record = sub.add_parser("record")
+    record.add_argument("--receipt", action="store_true", help="return only the accepted case verdict")
     record.add_argument("--case", required=True)
     record.add_argument("--input", required=True)
     advance = sub.add_parser("advance")
@@ -435,7 +441,7 @@ def main(argv: list[str] | None = None) -> int:
             checks = audit.check_many(args.case)
             output = checks[0] if len(checks) == 1 else checks
         elif args.command == "record":
-            output = audit.record(args.case, data)
+            output = audit.record(args.case, data, receipt=args.receipt)
         elif args.command == "advance":
             output = audit.advance(data)
         elif args.command == "add-case":

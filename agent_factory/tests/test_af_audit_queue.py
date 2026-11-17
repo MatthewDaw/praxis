@@ -30,3 +30,14 @@ def test_queue_handles_old_runs_and_missing_timing_without_inventing_eta():
                           "cases": [{"case_id": "A", "initial": {"status": "blocked"}, "scenario": {}}]})
     assert result["batches"][0]["state"] == "blocked"
     assert result["eta"]["runnable_hours"] is None
+
+
+def test_next_visits_favors_new_pages_and_combines_pending_and_retry():
+    from agent_factory.af_audit_queue import next_visits
+    cases = [{"case_id": key, "initial": {"status": state}, "scenario": {"route": route}}
+             for key, state, route in [("A", "blocked", "/used"), ("B", "not_run", "/used"),
+                                       ("C", "not_run", "/new"), ("D", "not_run", "/reserved")]]
+    status = {"cases": cases, "run_meta": {"inventory_ids": list("ABCD"), "initial_build": "one",
+              "queue_deferrals": {"identity": []}, "scheduling_assignments": {"D": {"status": "reserved"}}}}
+    visits = next_visits(status, audit_queue(status))
+    assert [v["case_ids"] for v in visits] == [["C"], ["A", "B"]]

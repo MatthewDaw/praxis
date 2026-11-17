@@ -148,8 +148,13 @@ def identity_plan(config: dict, current: dict, env: dict, save: Callable[[dict],
 
 
 def directive(plan: dict) -> str:
+    brief = {k: plan[k] for k in ('identity_available', 'progress', 'next_batches') if k in plan}
+    if 'next_batches' not in brief:
+        brief['runnable_original_ids'] = plan.get('runnable_original_ids', [])[:12]
+    if plan.get('identity_available') is False:
+        brief['actionable_blocker'] = plan['dependency'].get('actionable_blocker')
     return ('\nPrerequisite handler assignment (canonical, overrides anonymous-first probing):\n'
-            + json.dumps(plan, sort_keys=True) + '\n'
+            + json.dumps(brief, sort_keys=True) + '\n'
             'Work from next_batches in order. Batch compatible actions on one visit, preserving distinct verdicts. Select runnable original IDs from this assignment. Reconsider blocked originals when '
             'identity_available=true; verify real authentication and execute the missing behavior. '
             'Do not revisit deferred protected routes anonymously or add public-control variants '
@@ -170,7 +175,7 @@ def main() -> int:
         ledger = Audit(config['project'], config['audit_run'])
         plan = identity_plan(config, payload['current'], dict(os.environ),
                              lambda data: ledger.patch(ledger.one('run'), data))
-        from agent_factory.af_audit_queue import audit_queue
+        from agent_factory.af_audit_queue import audit_queue, next_visits
         current = payload['current']
         meta = current['run_meta']
         deferrals = {'identity': plan['deferred_identity_ids'], 'external': plan['deferred_external_ids']}
@@ -179,7 +184,7 @@ def main() -> int:
         queue = audit_queue({**current, 'run_meta': {**meta, 'queue_deferrals': deferrals}})
         if queue['state'] == 'mapped':
             plan['progress'] = queue['progress']
-            plan['next_batches'] = [batch for batch in queue['batches'] if batch['state'] in ('pending', 'retry')][:3]
+            plan['next_batches'] = next_visits(current, queue)
         print(json.dumps(plan))
         return 0
     except Exception:

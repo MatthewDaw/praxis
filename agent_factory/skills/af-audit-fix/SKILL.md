@@ -176,6 +176,8 @@ evidence for each action. Record a reason when a dependency requires another ord
 Newly discovered controls enter the ledger separately so the original denominator
 stays comparable. Resume from the same run after interruption.
 
+Use `record --receipt` to save a verified verdict without retrieving the whole inventory again. The worker combines eligible retries and pending checks on the same page and favors pages with less recorded evidence.
+
 Use `queue` to report completed originals, remaining work, held dependencies and
 the next batch. A completed original has a verified pass or failure. A fresh
 prerequisite can move an earlier blocked verdict into the retry queue. The ETA
