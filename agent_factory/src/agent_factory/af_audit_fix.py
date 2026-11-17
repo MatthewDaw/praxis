@@ -101,7 +101,7 @@ class Audit:
         require(all(nonempty(x) for x in ids) and len(ids) == len(set(ids)), "unique nonempty case IDs required")
         self.client.ensure_space(self.project, name=self.project)
         run = self.create("run", {"phase": "audit", "target": target, "initial_build": build,
-                                  "inventory_hash": digest(inventory), "case_ids": ids})
+                                  "inventory_hash": digest(inventory), "inventory_ids": ids, "case_ids": ids})
         meta = run["meta"]
         require(meta["inventory_hash"] == digest(inventory) and meta["target"] == target and meta["initial_build"] == build,
                 "run already exists with different inventory, target, or build")
@@ -110,6 +110,50 @@ class Audit:
             self.create("case:" + case["id"], {"case_id": case["id"], "scenario": case,
                                                 "initial": {"status": "not_run"}})
         return self.status()
+
+    def reconcile(self, inventory: dict, links: dict) -> dict:
+        """Attach partial evidence to the original inventory without changing verdicts."""
+        fact = self.one("run")
+        run = fact["meta"]
+        require(run["phase"] == "audit", "reconcile before freezing the audit")
+        require(run["inventory_hash"] == digest(inventory), "original inventory hash differs")
+        ids = [case["id"] for case in inventory["scenarios"]]
+        require(set(ids) <= set(run["case_ids"]), "original inventory cases missing")
+        merged = {**run.get("coverage_links", {}), **links}
+        for child, parent in merged.items():
+            require(child in run["case_ids"] and child not in ids and parent in ids,
+                    "coverage link requires an added case and an original inventory ID")
+        self.patch(fact, {"inventory_ids": ids, "coverage_links": merged})
+        return self.status()
+
+    @staticmethod
+    def execution_key(scenario: dict) -> tuple:
+        fields = ("parent_id", "behavior_id", "role", "sport", "viewport")
+        return tuple(re.sub(r"\s+", " ", str(scenario.get("required_" + field,
+                     scenario.get(field, ""))).strip()).casefold() for field in fields)
+
+    def check(self, case_id: str) -> dict:
+        """Call before browser execution; return prior evidence for covered cases."""
+        status = self.status()
+        phase = status["phase"]
+        require(phase in {"audit", "reaudit"}, "browser checks only run during audit phases")
+        matches = [c for c in status["cases"] + status["regression_neighbors"] if c["case_id"] == case_id]
+        require(len(matches) == 1, "case not found or ambiguous")
+        case = matches[0]
+        run = status["run_meta"]
+        if phase == "reaudit":
+            require(case_id in run["failed_ids"] or case in status["regression_neighbors"],
+                    "re-audit limited to frozen failures and linked regression neighbors")
+        result = case.get("initial" if phase == "audit" else "reaudit", {})
+        build = run["initial_build"] if phase == "audit" else run["deployment"]["build"]
+        reuse = result.get("build") == build and result.get("status") in {"passed", "failed"}
+        linked = [c for c in status["cases"]
+                  if status["coverage_links"].get(c["case_id"]) == case_id
+                  and c["initial"].get("build") == build
+                  and c["initial"]["status"] in {"passed", "failed"}]
+        return {"case_id": case_id, "build": build, "reuse": reuse, "result": result,
+                "linked_evidence": [{"case_id": c["case_id"], "scenario": c["scenario"],
+                                     "result": c["initial"]} for c in linked]}
 
     def add_case(self, case: dict) -> dict:
         run = self.one("run")
@@ -122,6 +166,17 @@ class Audit:
             fact = self.create("neighbor:" + case["id"], {"case_id": case["id"], "scenario": case})
             require(fact["meta"]["scenario"] == case, "neighbor ID already used")
             return fact
+        if run["meta"].get("inventory_ids"):
+            original = run["meta"]["inventory_ids"]
+            require(case["id"] not in original, "use existing original case ID")
+            require(case.get("parent_id") in original or
+                    (not case.get("parent_id") and nonempty(case.get("discovered_control"))),
+                    "link an original scenario or describe the uncovered control")
+            key = self.execution_key(case)
+            require(all(key[1:]), "behavior_id, role, sport (or n/a), and viewport required")
+            for existing in self._cases(run["meta"]):
+                if existing["case_id"] != case["id"] and self.execution_key(existing["scenario"]) == key:
+                    raise ValueError(f"duplicate behavior tuple; reuse {existing['case_id']}")
         fact = self.create("case:" + case["id"], {"case_id": case["id"], "scenario": case,
                                                    "initial": {"status": "not_run"}})
         require(fact["meta"]["scenario"] == case, "case ID already used by another scenario")
@@ -184,6 +239,10 @@ class Audit:
         old = fact["meta"].get(slot, {})
         require(slot == "reaudit" or old.get("status", "not_run") == "not_run" or old.get("status") == "blocked" or old == result,
                 "recorded result is immutable; use a new run for another execution")
+        if old == result:
+            return self.status()
+        if slot == "reaudit" and old.get("build") == result["build"] and old.get("status") in {"passed", "failed"}:
+            require(nonempty(result.get("rerun_reason")), "same-build re-audit requires rerun_reason")
         # Credentials must remain in private fixture bundles, never the evidence ledger.
         require(redact_secrets(json.dumps(result)) == json.dumps(result), "redact credentials before recording evidence")
         changes = {slot: copy.deepcopy(result)}
@@ -252,7 +311,24 @@ class Audit:
         run = self.one("run")["meta"]
         cases = self._cases(run)
         counts = {s: sum(c["initial"]["status"] == s for c in cases) for s in ["not_run", *sorted(TERMINAL)]}
+        original = set(run.get("inventory_ids", []))
+        links = dict(run.get("coverage_links", {}))
+        for case in cases:
+            parent = case["scenario"].get("parent_id")
+            if parent in original:
+                links[case["case_id"]] = parent
+        with_evidence = {links[c["case_id"]] for c in cases
+                         if c["case_id"] in links and c["initial"]["status"] in {"passed", "failed"}}
+        inventory_counts = dict.fromkeys(["untouched", "partial", "blocked", "passed", "failed"], 0)
+        for case in cases:
+            if case["case_id"] in original:
+                state = case["initial"]["status"]
+                if state == "not_run":
+                    state = "partial" if case["case_id"] in with_evidence else "untouched"
+                inventory_counts[state] += 1
         return {"project": self.project, "run": self.run, "phase": run["phase"], "counts": counts,
+                "inventory_counts": inventory_counts, "added_cases": len(cases) - len(original) if original else None,
+                "coverage_links": links,
                 "full_coverage": counts["blocked"] == 0 and counts["not_run"] == 0,
                 "failed_ids": run.get("failed_ids", []), "run_meta": run, "cases": cases,
                 "regression_neighbors": [f["meta"] for f in self.facts() if f["meta"]["audit_key"].startswith("neighbor:")]}
@@ -261,7 +337,8 @@ class Audit:
         status = self.status()
         run = status["run_meta"]
         lines = [f"# Audit {self.project}/{self.run}", "", f"Phase: {status['phase']}",
-                 f"Initial coverage: {json.dumps(status['counts'], sort_keys=True)}", "",
+                 f"Original inventory: {json.dumps(status['inventory_counts'], sort_keys=True) if run.get('inventory_ids') else 'awaiting reconciliation'}",
+                 f"All cases: {json.dumps(status['counts'], sort_keys=True)}", "",
                  "Blocked cases are untested; they are never counted as passes.", "",
                  f"Target: {run['target']}", f"Initial build: {run['initial_build']}", ""]
         for item in [*status["cases"], *status["regression_neighbors"]]:
@@ -301,6 +378,10 @@ def main(argv: list[str] | None = None) -> int:
     init.add_argument("--build", required=True)
     add = sub.add_parser("add-case")
     add.add_argument("--input", required=True)
+    reconcile = sub.add_parser("reconcile")
+    reconcile.add_argument("--input", required=True, help="JSON object with original inventory and links")
+    check = sub.add_parser("check")
+    check.add_argument("--case", required=True)
     record = sub.add_parser("record")
     record.add_argument("--case", required=True)
     record.add_argument("--input", required=True)
@@ -318,6 +399,10 @@ def main(argv: list[str] | None = None) -> int:
                 data = json.load(handle)
         if args.command == "init":
             output = audit.init(data, args.target, args.build)
+        elif args.command == "reconcile":
+            output = audit.reconcile(data["inventory"], data["links"])
+        elif args.command == "check":
+            output = audit.check(args.case)
         elif args.command == "record":
             output = audit.record(args.case, data)
         elif args.command == "advance":

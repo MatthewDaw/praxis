@@ -102,7 +102,9 @@ def test_frozen_failures_and_deployment_gate(audit):
     audit.record('A', evidence('failed', 'sha2'))
     with pytest.raises(ValueError, match='must pass'):
         audit.advance({'observed_build': 'sha2', 'cleanup_verified': True, 'cleanup_evidence': 'cleanup:all'})
-    audit.record('A', evidence(build='sha2'))
+    with pytest.raises(ValueError, match='rerun_reason'):
+        audit.record('A', evidence(build='sha2'))
+    audit.record('A', {**evidence(build='sha2'), 'rerun_reason': 'Repeat after correcting the fixture'})
     audit.advance({'observed_build': 'sha2', 'cleanup_verified': True, 'cleanup_evidence': 'cleanup:all'})
     assert audit.status()['phase'] == 'complete'
     assert audit.one('case:A')['meta']['initial']['status'] == 'failed'
@@ -133,13 +135,13 @@ def test_isolated_run_scope_and_retry_init(audit):
 
 
 def test_discovered_cases_freeze_and_credential_rejection(audit):
-    audit.add_case({'id': 'C', 'title': 'Newly discovered control'})
+    audit.add_case({'id': 'C', 'title': 'Newly discovered control', 'discovered_control': 'New control', 'behavior_id': 'new-control', 'role': 'admin', 'sport': 'n/a', 'viewport': '1280x720'})
     bad = evidence()
     bad['actual'] = 'password=DoNotUpload123'
     with pytest.raises(ValueError, match='credentials'):
         audit.record('A', bad)
     for case in ['A', 'B', 'C']:
-        audit.record(case, evidence())
+        audit.record(case, {**evidence(), **({'sport': 'n/a'} if case == 'C' else {})})
     freeze(audit)
     with pytest.raises(ValueError, match='frozen'):
         audit.add_case({'id': 'D'})
@@ -181,7 +183,7 @@ def test_failed_reaudit_returns_to_fix_and_neighbors_cannot_hide_failures(audit)
 
 
 def test_wrong_origin_and_expanded_role_sport_viewport_rejected(audit):
-    audit.add_case({'id': 'TUPLE', 'required_role': 'official', 'required_sport': 'basketball',
+    audit.add_case({'id': 'TUPLE', 'parent_id': 'A', 'behavior_id': 'create-team', 'required_role': 'official', 'required_sport': 'basketball',
                     'required_viewport': '1280x720'})
     wrong = evidence()
     wrong['route'] = 'https://unrelated.example/teams'
@@ -235,3 +237,17 @@ def test_report_contains_reaudit_deployment_and_cleanup(audit):
     assert 'release:sha2' in report
     assert 'cleanup:all' in report
     assert _ARTIFACT['sha256'] in report
+
+def test_reuse_and_partial_inventory_coverage(audit):
+    case = dict(id="C", parent_id="A", behavior_id="create-team", role="admin",
+                sport="n/a", viewport="1280x720")
+    audit.add_case(case)
+    with pytest.raises(ValueError, match="reuse C"):
+        audit.add_case({**case, "id": "D", "behavior_id": " Create-team "})
+    assert not audit.check("C")["reuse"]
+    audit.record("C", {**evidence(), "sport": "n/a"})
+    assert audit.check("C")["reuse"]
+    assert audit.check("A")["linked_evidence"][0]["case_id"] == "C"
+    assert audit.status()["inventory_counts"] == dict(untouched=1, partial=1, blocked=0, passed=0, failed=0)
+    with pytest.raises(ValueError, match="unexecuted"):
+        freeze(audit)

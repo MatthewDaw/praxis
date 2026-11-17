@@ -45,6 +45,25 @@ VERIFY external signals → FINISH. Do not place authored check lists on tickets
    Reconcile every discovered control with a scenario or an explained exclusion.
    A blocked or untested scenario never counts as passed.
 
+## Use each page visit for a batch
+
+Start with pending original inventory IDs. Group cases by route, role, sport,
+viewport and fixture state. In one browser context, inspect the page once and
+exercise the pending behaviors that share those prerequisites. Save distinct
+verdicts and evidence references for each case. Revisit for a named requirement
+such as reload persistence, a different permission, or a failure reproduction.
+Generate reusable tests from the same session; run them together when needed
+rather than replaying the page for each control during discovery.
+
+Use `check --case ID` before executing. Reuse a same-build verdict and inspect
+`linked_evidence` to plan only the steps still missing from an original case.
+For a new variant, set `parent_id`, a stable `behavior_id` for the action, and the
+role, sport (or `n/a`), and viewport. For a genuinely new control, describe it
+in `discovered_control`. The ledger rejects duplicate registered tuples. Report
+`inventory_counts` alongside the added case count. Partial evidence never closes
+its parent. Record a `rerun_reason` when repeating a completed re-audit case on
+the same build. One coordinator assigns each case before parallel browser work.
+
 ## Fix, deploy and re-audit
 
 Freeze the initial audit report and failed case IDs before fixing. Create located
