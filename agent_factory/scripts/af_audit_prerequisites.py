@@ -150,7 +150,7 @@ def identity_plan(config: dict, current: dict, env: dict, save: Callable[[dict],
 def directive(plan: dict) -> str:
     return ('\nPrerequisite handler assignment (canonical, overrides anonymous-first probing):\n'
             + json.dumps(plan, sort_keys=True) + '\n'
-            'Select runnable original IDs from this assignment. Reconsider blocked originals when '
+            'Work from next_batches in order. Batch compatible actions on one visit, preserving distinct verdicts. Select runnable original IDs from this assignment. Reconsider blocked originals when '
             'identity_available=true; verify real authentication and execute the missing behavior. '
             'Do not revisit deferred protected routes anonymously or add public-control variants '
             'to work around a shared missing prerequisite. One missing dependency does not prove '
@@ -170,6 +170,16 @@ def main() -> int:
         ledger = Audit(config['project'], config['audit_run'])
         plan = identity_plan(config, payload['current'], dict(os.environ),
                              lambda data: ledger.patch(ledger.one('run'), data))
+        from agent_factory.af_audit_queue import audit_queue
+        current = payload['current']
+        meta = current['run_meta']
+        deferrals = {'identity': plan['deferred_identity_ids'], 'external': plan['deferred_external_ids']}
+        if deferrals != meta.get('queue_deferrals'):
+            ledger.patch(ledger.one('run'), {'queue_deferrals': deferrals})
+        queue = audit_queue({**current, 'run_meta': {**meta, 'queue_deferrals': deferrals}})
+        if queue['state'] == 'mapped':
+            plan['progress'] = queue['progress']
+            plan['next_batches'] = [batch for batch in queue['batches'] if batch['state'] in ('pending', 'retry')][:3]
         print(json.dumps(plan))
         return 0
     except Exception:

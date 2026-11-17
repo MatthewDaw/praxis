@@ -156,3 +156,21 @@ Finish with coverage counts, unresolved failures and blockers, evidence location
 fix/deployment revisions, failed-case re-audit and cleanup results. Remove run-owned
 active fixtures; retain required immutable audit evidence and report that retention.
 Never describe partial or blocked coverage as testing every feature successfully.
+
+## Map and report the initial audit queue
+
+Before the first feature test, enumerate the deployed pages and actions, meaningful
+role differences, required fixtures and expected outcomes. Register that inventory
+with `init`, then run `queue` to inspect the mapped batches. Each batch shares a
+route, role context and other recorded prerequisites. Use `primary_route` when a
+scenario lists multiple routes. Select eligible batches in order, keeping separate
+evidence for each action. Record a reason when a dependency requires another order.
+Newly discovered controls enter the ledger separately so the original denominator
+stays comparable. Resume from the same run after interruption.
+
+Use `queue` to report completed originals, remaining work, held dependencies and
+the next batch. A completed original has a verified pass or failure. A fresh
+prerequisite can move an earlier blocked verdict into the retry queue. The ETA
+uses up to 20 recent timed original verdicts and needs at least four spread over
+five minutes. Report an unknown full-audit ETA while dependency waits are open.
+Estimates cover the initial audit only.

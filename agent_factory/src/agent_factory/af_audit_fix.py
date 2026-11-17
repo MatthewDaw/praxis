@@ -18,6 +18,7 @@ from urllib.request import url2pathname
 
 from hooks import _praxis
 from agent_factory.ingestion_api import redact_secrets
+from agent_factory.af_audit_queue import audit_queue
 
 CATEGORY = "audit-fix"
 TERMINAL = {"passed", "failed", "blocked"}
@@ -245,7 +246,7 @@ class Audit:
             require(nonempty(result.get("rerun_reason")), "same-build re-audit requires rerun_reason")
         # Credentials must remain in private fixture bundles, never the evidence ledger.
         require(redact_secrets(json.dumps(result)) == json.dumps(result), "redact credentials before recording evidence")
-        changes = {slot: copy.deepcopy(result)}
+        changes = {slot: copy.deepcopy(result), slot + "_recorded_at": datetime.now(timezone.utc).isoformat()}
         if slot == "reaudit":
             changes["reaudit_attempts"] = fact["meta"].get("reaudit_attempts", []) + [copy.deepcopy(result)]
         self.patch(fact, changes)
@@ -410,6 +411,7 @@ def main(argv: list[str] | None = None) -> int:
     advance.add_argument("--input", required=True)
     sub.add_parser("status")
     sub.add_parser("report")
+    sub.add_parser("queue", help="ordered initial audit batches, original coverage and throughput estimate")
     args = parser.parse_args(argv)
     try:
         _praxis.assert_org_matches(args.org)
@@ -430,6 +432,8 @@ def main(argv: list[str] | None = None) -> int:
             output = audit.advance(data)
         elif args.command == "add-case":
             output = audit.add_case(data)
+        elif args.command == "queue":
+            output = audit_queue(audit.status())
         elif args.command == "report":
             print(audit.report())
             return 0
