@@ -55,6 +55,19 @@ such as reload persistence, a different permission, or a failure reproduction.
 Generate reusable tests from the same session; run them together when needed
 rather than replaying the page for each control during discovery.
 
+Choose a representative profile for each shared behavior when the view, available
+actions, visible data scope and effective permissions match. Record which profile
+ran the check, which profiles share that behavior and the basis for equivalence.
+Keep direct execution counts specific to the tested profile. Where profiles
+differ, batch the affected controls and visibility checks into one visit per
+profile. If equivalence is uncertain, verify the difference with a focused check.
+
+For editable permission settings, use separate administrator and affected-user
+sessions with run-owned data. Exercise the affected action before the grant,
+after the grant and after revocation. Verify the expected outcome at each step,
+including the applicable team or tenant scope and whether any change persisted.
+Keep evidence for each boundary and record missing fixture identities as blockers.
+
 Use `check --case ID` before executing. Reuse a same-build verdict and inspect
 `linked_evidence` to plan only the steps still missing from an original case.
 For a new variant, set `parent_id`, a stable `behavior_id` for the action, and the
