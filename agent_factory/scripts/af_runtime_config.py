@@ -125,7 +125,7 @@ def runtime_environment(config: dict, inherited: dict[str, str]) -> dict[str, st
                AF_LEAN_WORKERS='1', AF_TICKET_DEADLINE_ACTION='warn',
                AF_RUNTIME_CONFIG=str(runtime / 'config.json'))
     env['PATH'] = str(runtime / 'bin') + os.pathsep + env.get('PATH', '')
-    env['PYTHONPATH'] = os.pathsep.join([str(factory / 'scripts'), str(factory / 'hooks'),
+    env['PYTHONPATH'] = os.pathsep.join([str(factory), str(factory / 'scripts'), str(factory / 'hooks'),
                                        str(factory / 'src'), env.get('PYTHONPATH', '')])
     if config.get('claude_config_dir'):
         env['CLAUDE_CONFIG_DIR'] = (inherited.get('CLAUDE_CONFIG_DIR', config['claude_config_dir'])

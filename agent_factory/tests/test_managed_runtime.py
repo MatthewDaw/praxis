@@ -84,6 +84,19 @@ def test_generated_python_entry_loads_identity_and_pins_project(tmp_path, factor
     assert 'synthetic-test-key' not in result.stdout + result.stderr
 
 
+def test_generated_python_entry_can_import_shipped_hooks_package(tmp_path, factory):
+    # Source snapshots ship hooks as a sibling package to src/agent_factory.
+    # The source-layout command must work without a globally installed wheel.
+    hooks = factory / 'hooks'
+    hooks.mkdir()
+    (hooks / '__init__.py').write_text('SNAPSHOT_PROOF = "owned-release-hooks"\n')
+    config = setup.install(values(tmp_path), factory, pin_project=False)
+    result = subprocess.run([str(Path(config['runtime']) / 'bin/factory-python'), '-c',
+                             'import hooks; print(hooks.SNAPSHOT_PROOF)'],
+                            capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == 'owned-release-hooks'
+
+
 def test_generation_probe_keeps_its_minimal_config_but_workers_use_pinned_login(tmp_path, factory):
     config = setup.install(values(tmp_path), factory, pin_project=False)
     normal = runtime_environment(config, {'CLAUDE_CONFIG_DIR': '/other-login'})
