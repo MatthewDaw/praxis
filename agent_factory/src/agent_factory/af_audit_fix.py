@@ -259,6 +259,17 @@ class Audit:
         require(gate.get("observed_build") == run.get("deployment", {}).get("build", run["initial_build"]),
                 "deployment identity missing or changed")
         if phase == "audit":
+            identity = run.get("identity_prerequisite", {})
+            if identity.get("status") == "available":
+                affected = set(identity.get("affected_original_ids", []))
+                stale = [c["case_id"] for c in cases if c["case_id"] in affected
+                         and c["initial"].get("status") == "blocked"
+                         and not (c["initial"].get("prerequisite_revision") == (identity.get("revision") or "available")
+                                  and isinstance(c["initial"].get("blocking_prerequisites"), list)
+                                  and c["initial"]["blocking_prerequisites"]
+                                  and all(nonempty(v) for v in c["initial"]["blocking_prerequisites"])
+                                  and "browser-identity" not in c["initial"]["blocking_prerequisites"])]
+                require(not stale, "reconsider previously blocked originals after identity provisioning: " + ", ".join(stale))
             require(all(c["initial"]["status"] in TERMINAL for c in cases), "unexecuted cases remain")
             require(gate.get("discovery_reconciled") is True and nonempty(gate.get("discovery_evidence")),
                     "reconcile runtime controls against inventory before freezing")

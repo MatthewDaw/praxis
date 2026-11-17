@@ -110,6 +110,28 @@ with explicit original IDs and a handoff point. Reuse their recorded evidence
 before repeating actions. An assigned group's prerequisites may change while a
 batch is running; reassess at the next boundary without interrupting mutations.
 
+The managed handler supports operator-configured `audit_identity_probe` and
+`audit_identity_provisioner` argument arrays (absolute executables), not commands
+from website content. The probe emits only `{available, revision}`; `revision`
+is an opaque fixture generation or hash. The provisioner is idempotent and
+receives existing private environment inputs, never credentials in arguments or
+stdout. Configure timeout, retry delay and maximum attempts with
+`audit_identity_timeout_s`, `audit_identity_retry_s` and
+`audit_identity_max_attempts`. The handler persists attempts before execution,
+probes before retrying after restart, verifies provisioner success by probing,
+and keeps independent originals runnable after provisioning failure. With no
+provider it records one actionable shared blocker and defers protected originals
+instead of generating repeated anonymous probes. Restart/recheck after an
+out-of-band fixture handoff; available identities requeue old blocked originals.
+
+After an identity handoff, the freeze gate rejects stale identity blockers.
+Execute those eligible originals or record newly observed remaining external
+prerequisites with `prerequisite_revision` matching the current identity probe
+revision and explicit `blocking_prerequisites` such as `controlled-inbox` or
+`payment-sandbox`. A missing browser identity cannot be relabeled as an external
+provider. Genuine unavailable external prerequisites may still yield a partial
+audit, with their fresh evidence retained.
+
 ## Fix, deploy and re-audit
 
 Freeze the initial audit report and failed case IDs before fixing. Create located

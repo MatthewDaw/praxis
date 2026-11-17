@@ -251,3 +251,20 @@ def test_reuse_and_partial_inventory_coverage(audit):
     assert audit.status()["inventory_counts"] == dict(untouched=1, partial=1, blocked=0, passed=0, failed=0)
     with pytest.raises(ValueError, match="unexecuted"):
         freeze(audit)
+
+
+def test_provisioning_cannot_freeze_stale_identity_blocks(audit):
+    audit.record('A', evidence('blocked'))
+    audit.record('B', evidence())
+    audit.patch(audit.one('run'), {'identity_prerequisite': {'status': 'available', 'revision': 'fixture2',
+                                                          'affected_original_ids': ['A']}})
+    with pytest.raises(ValueError, match='reconsider previously blocked'):
+        freeze(audit)
+    # A real newly observed external prerequisite can remain partial after rechecking.
+    renewed = evidence('blocked')
+    renewed['prerequisite_revision'] = 'fixture2'
+    renewed['blocking_prerequisites'] = ['controlled-inbox']
+    renewed['blocker'] = 'Sign-in works; controlled reset inbox not configured'
+    audit.record('A', renewed)
+    freeze(audit)
+    assert audit.status()['phase'] == 'fix'

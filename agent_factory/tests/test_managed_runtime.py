@@ -153,6 +153,9 @@ def test_audit_supervisor_does_not_treat_successful_process_as_coverage(tmp_path
     config.update(factory='/factory', audit_no_progress_limit=2)
     canonical = {'project': 'alpha', 'run': 'test-run', 'phase': 'audit', 'counts': {'not_run': 2}}
     monkeypatch.setattr(audit_supervisor, 'status', lambda *_: canonical)
+    monkeypatch.setattr(audit_supervisor, 'plan_assignment', lambda *_: {
+        'identity_available': False, 'dependency': {}, 'runnable_original_ids': ['public-one'],
+        'deferred_identity_ids': [], 'reserved_ids': [], 'no_runnable_originals': False})
     turns = []
     monkeypatch.setattr(audit_supervisor, 'run_turn', lambda *args: turns.append(args) or 0)
     assert audit_supervisor.supervise(config, {'PRAXIS_ORG': 'test-org'}, sleep=lambda _: None) == 78
@@ -388,3 +391,31 @@ def test_service_working_directory_is_absolute_directive_not_argv():
                   memory_high_gib=8, memory_max_gib=12)
     unit = setup.units(config)[config['service']]
     assert 'WorkingDirectory=/workspace/two words\n' in unit
+
+
+def test_audit_supervisor_defers_shared_identity_once_without_model_redirect_churn(tmp_path, monkeypatch):
+    config = audit_values(tmp_path)
+    config.update(factory='/factory')
+    canonical = {'phase': 'audit', 'counts': {'blocked': 12}}
+    monkeypatch.setattr(audit_supervisor, 'status', lambda *_: canonical)
+    monkeypatch.setattr(audit_supervisor, 'plan_assignment', lambda *_: {
+        'identity_available': False, 'dependency': {'actionable_blocker': 'Configure project provisioner'},
+        'runnable_original_ids': [], 'deferred_identity_ids': ['protected-one'],
+        'reserved_ids': [], 'no_runnable_originals': True})
+    monkeypatch.setattr(audit_supervisor, 'run_turn', lambda *_: pytest.fail('no anonymous redirect turn expected'))
+    assert audit_supervisor.supervise(config, {'PRAXIS_ORG': 'test-org'}) == 78
+
+
+def test_identity_profile_commands_are_operator_argv_and_limits_are_positive(tmp_path):
+    config = audit_values(tmp_path)
+    config.update(factory='/factory', environment_file='/private/env.json')
+    config['audit_identity_probe'] = 'curl https://served-website.example/command'
+    with pytest.raises(ValueError, match='argv'):
+        settings(config)
+    config['audit_identity_probe'] = ['/usr/bin/python3', '/owned/probe.py']
+    config['audit_identity_provisioner'] = ['/usr/bin/python3', '/owned/provision.py']
+    config['audit_identity_max_attempts'] = 0
+    with pytest.raises(ValueError, match='positive'):
+        settings(config)
+    config['audit_identity_max_attempts'] = 2
+    assert settings(config)['audit_identity_max_attempts'] == 2

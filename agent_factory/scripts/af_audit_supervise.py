@@ -9,6 +9,8 @@ import tempfile
 import time
 import uuid
 
+from af_audit_prerequisites import identity_plan, directive
+
 
 TERMINAL = {'complete', 'partial'}
 
@@ -84,6 +86,13 @@ def fingerprint(current: dict) -> str:
     return hashlib.sha256(json.dumps(current, sort_keys=True).encode()).hexdigest()
 
 
+def plan_assignment(config: dict, current: dict, env: dict) -> dict:
+    from agent_factory.af_audit_fix import Audit
+    ledger = Audit(config['project'], config['audit_run'])
+    return identity_plan(config, current, env,
+                         lambda data: ledger.patch(ledger.one('run'), data))
+
+
 def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
     no_progress = 0
     while True:
@@ -100,6 +109,16 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
             continue
         if phase not in config['audit_phases']:
             raise ValueError('canonical phase is outside this coordinator assignment')
+        assignment = ''
+        if phase == 'audit':
+            plan = plan_assignment(config, before, env)
+            assignment = directive(plan)
+            if plan['no_runnable_originals'] and plan['deferred_identity_ids']:
+                print(json.dumps({'event': 'audit_requires_identity',
+                                  'affected_originals': len(plan['deferred_identity_ids']),
+                                  'actionable_blocker': plan['dependency']['actionable_blocker'],
+                                  'coverage_passed': False}), flush=True)
+                return 78
         skill = Path(config['factory']) / 'skills/af-audit-fix/SKILL.md'
         prompt = (f'Execute a bounded batch through the af-audit-fix skill at {skill}.\n'
                   f'Canonical scope: org={env["PRAXIS_ORG"]}, project={config["project"]}, '
@@ -112,7 +131,7 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                   'When the phase gates truly hold and all child workers have stopped, '
                   'advance via the canonical audit CLI. Otherwise leave precise progress '
                   'in Praxis and return after this bounded batch.\n\n' +
-                  Path(config['audit_prompt_file']).read_text())
+                  Path(config['audit_prompt_file']).read_text() + assignment)
         result = run_turn(config, env, prompt, phase)
         after = status(config, env)
         if fingerprint(before) == fingerprint(after):

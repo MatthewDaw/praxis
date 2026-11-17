@@ -64,6 +64,15 @@ def settings(values: dict) -> dict:
         probe = result.get('audit_browser_probe')
         if not isinstance(probe, list) or not probe or not all(isinstance(x, str) and x for x in probe) or not Path(probe[0]).is_absolute():
             raise ValueError('audit_browser_probe must be an argv array with an absolute executable')
+        for key in ('audit_identity_probe', 'audit_identity_provisioner'):
+            command = result.get(key)
+            if command is not None and (not isinstance(command, list) or not command
+                    or not all(isinstance(x, str) and x for x in command)
+                    or not Path(command[0]).is_absolute()):
+                raise ValueError(f'{key} must be an argv array with an absolute executable')
+        for key in ('audit_identity_timeout_s', 'audit_identity_retry_s', 'audit_identity_max_attempts'):
+            if key in result and (not isinstance(result[key], int) or isinstance(result[key], bool) or result[key] <= 0):
+                raise ValueError(f'{key} must be a positive integer')
         for key in ('audit_batch_timeout_s', 'audit_no_progress_limit'):
             if not isinstance(result[key], int) or isinstance(result[key], bool) or result[key] <= 0:
                 raise ValueError(f'{key} must be a positive integer')
