@@ -77,6 +77,39 @@ in `discovered_control`. The ledger rejects duplicate registered tuples. Report
 its parent. Record a `rerun_reason` when repeating a completed re-audit case on
 the same build. One coordinator assigns each case before parallel browser work.
 
+## Schedule by available prerequisites
+
+At every batch boundary, inspect current private fixture handoffs and prerequisite
+observations before selecting work. Group a shared missing prerequisite once in
+Praxis, with its affected original IDs and the exact evidence needed to unblock
+it. Reference that group from case blockers. A missing actor bundle is one setup
+problem, not a reason to spend one browser visit per protected route proving the
+same anonymous redirect. Inspect each prerequisite once per unchanged handoff;
+recheck when provisioning, permissions, deployment or fixture state changes.
+
+Select runnable original end-to-end scenarios first, including previously blocked
+originals whose prerequisite is now available. Then cover the next runnable
+feature area, and finally meaningful missing role/sport/viewport boundaries.
+`check` permits execution of blocked cases: their old blocker is not a reusable
+pass or a permanent scheduling exclusion. Replace a blocked verdict only with
+new observed evidence; preserve its prior evidence in the prerequisite history.
+Do not freeze merely because all outstanding originals were labeled blocked
+before a new fixture handoff arrived.
+
+Separate prerequisites precisely: browser actors and run-owned entities; genuine
+MFA; a controlled inbox or issued invitation/reset link; playable media and
+processing completion; camera/microphone or delivery devices; payment sandbox;
+and a local fix/deployment executor. Provisioning one does not imply the others
+exist. Lack of a payment sandbox blocks paid checkout, not a permitted read-only
+billing overview. Lack of a physical camera does not block file upload/playback.
+A missing deployment executor blocks that later phase, not runnable initial audit.
+Never request cloud credentials for a browser worker to resolve these dependencies.
+
+Keep active one-off assignments separate from the persistent worker's next batch,
+with explicit original IDs and a handoff point. Reuse their recorded evidence
+before repeating actions. An assigned group's prerequisites may change while a
+batch is running; reassess at the next boundary without interrupting mutations.
+
 ## Fix, deploy and re-audit
 
 Freeze the initial audit report and failed case IDs before fixing. Create located
