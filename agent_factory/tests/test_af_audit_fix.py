@@ -268,3 +268,23 @@ def test_provisioning_cannot_freeze_stale_identity_blocks(audit):
     audit.record('A', renewed)
     freeze(audit)
     assert audit.status()['phase'] == 'fix'
+
+
+def test_external_dependency_change_prevents_freezing_unchanged_blocker(audit):
+    from agent_factory.af_audit_fix import digest
+    old = evidence('blocked')
+    old.update(prerequisite_revision='fixture2', blocking_prerequisites=['controlled-inbox'])
+    audit.record('A', old)
+    audit.record('B', evidence())
+    audit.patch(audit.one('run'), {'identity_prerequisite': {
+        'status': 'available', 'revision': 'fixture2', 'affected_original_ids': ['A'],
+        'external_deferred': {'A': {'result_fingerprint': digest(old),
+                                   'dependency_fingerprint': digest({'controlled-inbox': {'status': 'missing'}})}}},
+        'audit_prerequisites': {'controlled-inbox': {'status': 'available'}}})
+    with pytest.raises(ValueError, match='prerequisite changes'):
+        freeze(audit)
+    new = evidence('blocked')
+    new.update(prerequisite_revision='fixture2', blocking_prerequisites=['controlled-inbox'],
+               actual='New issued reset link works, outbound inbox delivery still unverified')
+    audit.record('A', new)
+    freeze(audit)

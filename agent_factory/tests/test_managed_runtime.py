@@ -419,3 +419,39 @@ def test_identity_profile_commands_are_operator_argv_and_limits_are_positive(tmp
         settings(config)
     config['audit_identity_max_attempts'] = 2
     assert settings(config)['audit_identity_max_attempts'] == 2
+
+
+def test_prerequisite_handler_uses_same_scoped_environment_as_status(tmp_path, monkeypatch):
+    config = audit_values(tmp_path)
+    config.update(factory='/factory')
+    env = {'PRAXIS_ORG': 'specific-org', 'PRAXIS_API_KEY': 'synthetic-private-key'}
+    canonical = {'phase': 'audit', 'run_meta': {}}
+    captured = []
+    def execute(command, **kwargs):
+        captured.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout=json.dumps({'identity_available': True}))
+    monkeypatch.setattr(audit_supervisor.subprocess, 'run', execute)
+    assert audit_supervisor.plan_assignment(config, canonical, env)['identity_available']
+    command, options = captured[0]
+    assert command[0] == config['python']
+    assert options['env'] is env
+    assert json.loads(options['input'])['expected_org'] == 'specific-org'
+    assert 'synthetic-private-key' not in options['input']
+
+
+def test_identity_wait_reprobes_and_then_runs_without_anonymous_turn(tmp_path, monkeypatch):
+    config = audit_values(tmp_path)
+    config.update(factory='/factory', audit_no_progress_limit=2)
+    states = iter([{'phase': 'audit'}, {'phase': 'audit'}, {'phase': 'complete'}, {'phase': 'complete'}])
+    monkeypatch.setattr(audit_supervisor, 'status', lambda *_: next(states))
+    plans = iter([{'no_runnable_originals': True, 'deferred_identity_ids': ['AUTH'], 'wait_for_identity': True,
+                   'dependency': {'actionable_blocker': 'Await project provisioner', 'attempts': 1}},
+                  {'no_runnable_originals': False, 'deferred_identity_ids': [], 'dependency': {},
+                   'runnable_original_ids': ['AUTH']}])
+    monkeypatch.setattr(audit_supervisor, 'plan_assignment', lambda *_: next(plans))
+    waits, turns = [], []
+    monkeypatch.setattr(audit_supervisor, 'run_turn', lambda *args: turns.append(args[2]) or 0)
+    assert audit_supervisor.supervise(config, {'PRAXIS_ORG': 'specific-org'}, sleep=waits.append) == 0
+    assert waits == [30]
+    assert len(turns) == 1
+    assert 'AUTH' in turns[0]

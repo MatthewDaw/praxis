@@ -269,7 +269,17 @@ class Audit:
                                   and c["initial"]["blocking_prerequisites"]
                                   and all(nonempty(v) for v in c["initial"]["blocking_prerequisites"])
                                   and "browser-identity" not in c["initial"]["blocking_prerequisites"])]
-                require(not stale, "reconsider previously blocked originals after identity provisioning: " + ", ".join(stale))
+                deferred = identity.get("external_deferred", {})
+                groups = run.get("audit_prerequisites", {})
+                for case in cases:
+                    result = case["initial"]
+                    saved = deferred.get(case["case_id"])
+                    if saved and result.get("status") == "blocked" and saved.get("result_fingerprint") == digest(result):
+                        dependencies = result.get("blocking_prerequisites", [])
+                        observed = digest({dep: groups.get(dep, {}) for dep in dependencies})
+                        if saved.get("dependency_fingerprint") != observed:
+                            stale.append(case["case_id"])
+                require(not stale, "reconsider previously blocked originals after prerequisite changes: " + ", ".join(stale))
             require(all(c["initial"]["status"] in TERMINAL for c in cases), "unexecuted cases remain")
             require(gate.get("discovery_reconciled") is True and nonempty(gate.get("discovery_evidence")),
                     "reconcile runtime controls against inventory before freezing")

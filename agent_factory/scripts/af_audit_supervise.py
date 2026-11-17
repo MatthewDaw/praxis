@@ -87,14 +87,20 @@ def fingerprint(current: dict) -> str:
 
 
 def plan_assignment(config: dict, current: dict, env: dict) -> dict:
-    from agent_factory.af_audit_fix import Audit
-    ledger = Audit(config['project'], config['audit_run'])
-    return identity_plan(config, current, env,
-                         lambda data: ledger.patch(ledger.one('run'), data))
+    # Same explicit runtime environment and org pin as status(); never ambient auth.
+    command = [config['python'], str(Path(config['factory']) / 'scripts/af_audit_prerequisites.py')]
+    result = subprocess.run(command, input=json.dumps({'config': config, 'current': current,
+                            'expected_org': env['PRAXIS_ORG']}), cwd=config['worktree'], env=env,
+                            capture_output=True, text=True,
+                            timeout=3 * config.get('audit_identity_timeout_s', 120) + 120)
+    if result.returncode:
+        raise RuntimeError('Scoped Praxis prerequisite handler unavailable; no completion inferred')
+    return json.loads(result.stdout)
 
 
 def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
     no_progress = 0
+    identity_notice = None
     while True:
         before = status(config, env)
         phase = before['phase']
@@ -114,10 +120,16 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
             plan = plan_assignment(config, before, env)
             assignment = directive(plan)
             if plan['no_runnable_originals'] and plan['deferred_identity_ids']:
-                print(json.dumps({'event': 'audit_requires_identity',
-                                  'affected_originals': len(plan['deferred_identity_ids']),
-                                  'actionable_blocker': plan['dependency']['actionable_blocker'],
-                                  'coverage_passed': False}), flush=True)
+                notice = fingerprint(plan['dependency'])
+                if notice != identity_notice:
+                    print(json.dumps({'event': 'audit_requires_identity',
+                                      'affected_originals': len(plan['deferred_identity_ids']),
+                                      'actionable_blocker': plan['dependency']['actionable_blocker'],
+                                      'coverage_passed': False}), flush=True)
+                    identity_notice = notice
+                if plan.get('wait_for_identity'):
+                    sleep(30)
+                    continue
                 return 78
         skill = Path(config['factory']) / 'skills/af-audit-fix/SKILL.md'
         prompt = (f'Execute a bounded batch through the af-audit-fix skill at {skill}.\n'

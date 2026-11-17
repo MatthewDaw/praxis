@@ -8,6 +8,8 @@ its confirmation. A restarted coordinator always probes before retrying.
 from __future__ import annotations
 
 import json
+import hashlib
+import sys
 import re
 import subprocess
 import time
@@ -21,7 +23,7 @@ def requires_identity(scenario: dict) -> bool:
         return scenario['requires_identity']
     roles = scenario.get('roles', [scenario.get('required_role', scenario.get('role', ''))])
     public_roles = {'anonymous', 'public', 'public reader', 'unauthenticated', 'visitor', 'any visitor'}
-    return any(IDENTITY_WORDS.search(str(role)) or str(role).strip().casefold() not in public_roles for role in roles if str(role).strip())
+    return any(str(role).strip().casefold() not in public_roles for role in roles if str(role).strip())
 
 
 def execute(argv: list[str], env: dict, cwd: str, timeout: int) -> dict:
@@ -111,17 +113,38 @@ def identity_plan(config: dict, current: dict, env: dict, save: Callable[[dict],
                   and c.get('initial', {}).get('status', 'not_run') in {'not_run', 'blocked'}]
     protected = [c['case_id'] for c in candidates if requires_identity(c.get('scenario', {}))]
     state['affected_original_ids'] = sorted(protected)
-    if state != prior:
-        save({'identity_prerequisite': state})
     reserved = {key for key, value in current.get('run_meta', {}).get('scheduling_assignments', {}).items()
                 if value.get('status') == 'reserved'}
+    external = dict(state.get('external_deferred', {}))
+    deferred_external = []
+    groups = current.get('run_meta', {}).get('audit_prerequisites', {})
+    for case in candidates:
+        result = case.get('initial', {})
+        dependencies = result.get('blocking_prerequisites', [])
+        if (result.get('status') != 'blocked' or not isinstance(dependencies, list) or not dependencies
+                or 'browser-identity' in dependencies
+                or result.get('prerequisite_revision') != (state.get('revision') or 'available')):
+            continue
+        fingerprint = hashlib.sha256(json.dumps({d: groups.get(d, {}) for d in dependencies}, sort_keys=True).encode()).hexdigest()
+        verdict = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
+        old = external.get(case['case_id'])
+        if old is None or old['result_fingerprint'] != verdict:
+            external[case['case_id']] = {'dependency_fingerprint': fingerprint, 'result_fingerprint': verdict}
+            deferred_external.append(case['case_id'])
+        elif old['dependency_fingerprint'] == fingerprint:
+            deferred_external.append(case['case_id'])
+    state['external_deferred'] = external
     runnable = [c['case_id'] for c in candidates if c['case_id'] not in reserved
+                and c['case_id'] not in deferred_external
                 and (available or c['case_id'] not in protected)]
-    # Previously blocked originals come first after an identity handoff changes.
     runnable.sort(key=lambda cid: (next(c for c in candidates if c['case_id'] == cid)['initial'].get('status') != 'blocked', cid))
+    if state != prior:
+        save({'identity_prerequisite': state})
     return {'identity_available': available, 'dependency': state,
             'runnable_original_ids': runnable, 'deferred_identity_ids': [] if available else sorted(protected),
-            'reserved_ids': sorted(reserved), 'no_runnable_originals': not runnable}
+            'deferred_external_ids': sorted(deferred_external),
+            'reserved_ids': sorted(reserved), 'no_runnable_originals': not runnable,
+            'wait_for_identity': bool(not available and probe and (not provider or state.get('attempts', 0) < config.get('audit_identity_max_attempts', 3)))}
 
 
 def directive(plan: dict) -> str:
@@ -131,4 +154,28 @@ def directive(plan: dict) -> str:
             'identity_available=true; verify real authentication and execute the missing behavior. '
             'Do not revisit deferred protected routes anonymously or add public-control variants '
             'to work around a shared missing prerequisite. One missing dependency does not prove '
-            'any case failed or passed. Respect reserved IDs. Continue independent runnable work.\n')
+            'any case failed or passed. Respect reserved IDs. Continue independent runnable work. '
+            'If no runnable originals remain, reconcile and evaluate genuine freeze/partial gates; '
+            'do not invent variants or relaunch unchanged external blockers.\n')
+
+
+def main() -> int:
+    try:
+        from agent_factory.af_audit_fix import Audit
+        from hooks import _praxis
+        import os
+        payload = json.load(sys.stdin)
+        config = payload['config']
+        _praxis.assert_org_matches(payload['expected_org'])
+        ledger = Audit(config['project'], config['audit_run'])
+        plan = identity_plan(config, payload['current'], dict(os.environ),
+                             lambda data: ledger.patch(ledger.one('run'), data))
+        print(json.dumps(plan))
+        return 0
+    except Exception:
+        print(json.dumps({'error': 'audit prerequisite handler failed; inspect private operator diagnostics'}))
+        return 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

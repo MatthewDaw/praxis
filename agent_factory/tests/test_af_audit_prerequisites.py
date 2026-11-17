@@ -98,3 +98,37 @@ def test_unknown_grouped_roles_are_not_treated_as_anonymous():
     assert requires_identity({'roles': ['all roles']})
     assert not requires_identity({'roles': ['anonymous', 'public reader']})
     assert not requires_identity({'requires_identity': False, 'roles': ['all roles']})
+
+
+def test_unauthenticated_alias_is_independent_despite_matching_word():
+    from af_audit_prerequisites import requires_identity
+    assert not requires_identity({'roles': ['unauthenticated']})
+
+
+def test_fresh_external_blocker_is_not_churned_until_its_dependency_changes():
+    state, saved = current(), []
+    state['cases'][0]['initial'].update(prerequisite_revision='fixture2', blocking_prerequisites=['controlled-inbox'])
+    state['run_meta']['audit_prerequisites'] = {'controlled-inbox': {'status': 'missing', 'revision': 'inbox1'}}
+    cfg = {'worktree': '/tmp', 'audit_identity_probe': ['/probe']}
+    probe = lambda *a: {'ok': True, 'output': {'available': True, 'revision': 'fixture2'}}
+    first = identity_plan(cfg, state, {}, saved.append, run=probe)
+    assert 'AUTH' not in first['runnable_original_ids']
+    assert first['deferred_external_ids'] == ['AUTH']
+    state['run_meta'].update(saved[-1])
+    second = identity_plan(cfg, state, {}, saved.append, run=probe)
+    assert 'AUTH' not in second['runnable_original_ids']
+    state['run_meta']['audit_prerequisites']['controlled-inbox'] = {'status': 'available', 'revision': 'inbox2'}
+    third = identity_plan(cfg, state, {}, saved.append, run=probe)
+    assert third['runnable_original_ids'][0] == 'AUTH'
+
+
+def test_provider_backoff_keeps_probe_waiting_instead_of_stranding_retry():
+    state = current()
+    state['run_meta']['identity_prerequisite'] = {'status': 'provisioning_failed', 'attempts': 1, 'retry_after': 500}
+    calls = []
+    def probe(argv, *args):
+        calls.append(argv[0]); return {'ok': True, 'output': {'available': False}}
+    plan = identity_plan({'worktree': '/tmp', 'audit_identity_probe': ['/probe'],
+                          'audit_identity_provisioner': ['/provide']}, state, {}, lambda _: None, run=probe, now=lambda: 100)
+    assert plan['wait_for_identity']
+    assert calls == ['/probe']
