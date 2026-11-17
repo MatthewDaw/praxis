@@ -61,6 +61,7 @@ def audit_queue(status, *, now=None):
     for (state, route, roles, sport, viewport, fixture), ids in sorted(groups.items(), key=lambda pair: order[pair[0][0]]):
         batches.append(dict(state=state, route=route, roles=list(roles), sport=sport,
                             viewport=viewport, fixture_state=fixture, case_ids=ids))
+    metrics = sweep_queue(status, batches)
     total = len(originals)
     completed = counts["passed"] + counts["failed"]
     progress = {k: counts[k] for k in ("passed", "failed", "assigned", "retry", "pending", "blocked")}
@@ -68,20 +69,72 @@ def audit_queue(status, *, now=None):
                     percent_complete=round(100*completed/total, 1) if total else 0)
     times = sorted(terminal_times)[-20:]
     eta = {"timed_originals": len(times), "runnable_hours": None, "full_audit_hours": None}
+    metrics["original_verdicts_per_hour"] = None
     # A burst of bulk writes is insufficient to estimate the pace of actual testing.
     if total == completed:
         eta.update(runnable_hours=0, full_audit_hours=0)
     elif len(times) >= 4 and times[-1] - times[0] >= 300:
         end = (now or datetime.now(timezone.utc)).timestamp()
         seconds_per_case = (max(end, times[-1]) - times[0]) / (len(times)-1)
+        metrics["original_verdicts_per_hour"] = round(3600 / seconds_per_case, 2)
         remaining = total - completed - counts["blocked"]
         eta["runnable_hours"] = ceil(seconds_per_case*remaining/360)/10
         if not counts["blocked"] and dispatch:
             eta["full_audit_hours"] = eta["runnable_hours"]
     return {"state": "mapped", "phase": "initial_audit", "build": meta["initial_build"],
-            "progress": progress, "eta": eta, "batches": batches,
+            "progress": progress, "eta": eta, "sweep_metrics": metrics, "batches": batches,
             "completed_cases": completed_cases,
             "additional_cases": [c["case_id"] for c in status["cases"] if c["case_id"] not in set_originals]}
+
+
+def sweep_queue(status, visits):
+    """Index recorded assertions by case and profile without inheriting verdicts."""
+    by_case = {}
+    remaining = {}
+    seen = set()
+    revisits = 0
+    sweeps = sorted(status.get("sweeps", []), key=lambda s: (s["started"], s["recording_started"]))
+    for sweep in sweeps:
+        scope = sweep["scope"]
+        for route in sweep["routes"]:
+            key = (route, scope["role"], scope["sport"], scope["viewport"], scope["fixtureState"])
+            revisits += key in seen
+            seen.add(key)
+        remaining.update(sweep["remaining"])
+        for check in sweep["checks"]:
+            key = (check["id"], check["route"], scope["role"], scope["sport"], scope["viewport"], scope["fixtureState"])
+            by_case.setdefault(check["caseId"], {})[key] = (scope, check, sweep["artifact"]["sha256"])
+    for visit in visits:
+        focus = {}
+        for case_id in visit["case_ids"]:
+            details = {}
+            if case_id in remaining:
+                details["remaining"] = remaining[case_id]
+            else:
+                legacy = status["run_meta"].get("queue_followups", {}).get(case_id, {})
+                if legacy.get("remaining_steps"):
+                    details["prior_followup"] = legacy["remaining_steps"]
+            for scope, check, sha in by_case.get(case_id, {}).values():
+                shared = check.get("equivalentRoles", [])
+                for role in visit["roles"]:
+                    # Unspecified inventory scope requires the worker to compare
+                    # the concrete visit scope before accepting checkpoint reuse.
+                    if not check["verified"] or role not in (scope["role"], *shared):
+                        continue
+                    if any(visit[k] and visit[k] != scope[v] for k, v in
+                           (("sport", "sport"), ("viewport", "viewport"), ("fixture_state", "fixtureState"))):
+                        continue
+                    details.setdefault("verified_checks", []).append(dict(
+                        id=check["id"], role=role, tested_scope=scope, route=check["route"],
+                        evidence=sha, equivalence_basis=check.get("equivalenceBasis") if role != scope["role"] else None))
+            if details:
+                focus[case_id] = details
+        if focus:
+            visit["case_focus"] = focus
+        near = [i for i in visit["case_ids"] if i in remaining and len(remaining[i]) <= 1]
+        if near:
+            visit["close_first"] = near
+    return {"recorded_sweeps": len(sweeps), "distinct_scoped_pages": len(seen), "scoped_revisits": revisits}
 
 
 def next_visits(status, queue, limit=6):
@@ -100,11 +153,15 @@ def next_visits(status, queue, limit=6):
             continue
         key = (batch["route"], tuple(batch["roles"]), batch["sport"], batch["viewport"], batch["fixture_state"])
         if key not in visits:
-            visits[key] = {k: v for k, v in batch.items() if k not in ("case_ids", "state")}
+            visits[key] = {k: v for k, v in batch.items() if k not in ("case_ids", "state", "case_focus", "close_first")}
             visits[key]["case_ids"] = []
         visits[key]["case_ids"].extend(batch["case_ids"])
+        if batch.get("case_focus"):
+            visits[key].setdefault("case_focus", {}).update(batch["case_focus"])
+        if batch.get("close_first"):
+            visits[key].setdefault("close_first", []).extend(batch["close_first"])
     ordered = sorted(visits.values(), key=lambda visit: (
-        not visit["route"].startswith("/"), evidence[visit["route"]]
+        not bool(visit.get("close_first")), not visit["route"].startswith("/"), evidence[visit["route"]]
     ))
     first_by_route = {}
     followups = []

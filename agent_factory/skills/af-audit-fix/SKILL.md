@@ -68,6 +68,15 @@ assigned pages. Keep distinct verdicts and complete the deeper workflows in
 follow-up batches. Summarize unique pages, actions exercised and open workflows
 in the batch report.
 
+Use the structured page-sweep helper during initial audit. Supply the scoped
+ledger command so the runner records all assertions once at sweep end. Set
+remaining checks against the complete original contract, including other roles.
+Finish close_first items while the fixture is open. Inspect case_focus for
+prior assertions and their exact scope. Directly execute every differing
+permission. Record the original verdict when its acceptance contract is decided.
+Compare end-to-end, planning, browser and recording times in sweep receipts,
+original verdicts per hour, and scoped page revisits in the queue.
+
 Choose a representative profile for each shared behavior when the view, available
 actions, visible data scope and effective permissions match. Record which profile
 ran the check, which profiles share that behavior and the basis for equivalence.

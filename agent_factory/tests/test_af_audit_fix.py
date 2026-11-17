@@ -308,3 +308,29 @@ def test_receipt_avoids_full_status_read_after_record(audit, monkeypatch):
     receipt = audit.record("A", result, receipt=True)
     assert receipt == {"case_id": "A", "phase": "audit", "build": "sha1", "status": "passed"}
     assert audit.record("A", result, receipt=True) == receipt
+
+
+def test_sweep_replay_scope_and_close_first(audit, tmp_path):
+    import json
+    from agent_factory.af_audit_queue import audit_queue, next_visits
+    path = tmp_path / "sweep.json"
+    action = dict(id="save", caseId="A", action="save", expected="saved", actual="saved", verified=True,
+                  equivalentRoles=["coach"], equivalenceBasis="same scoped display")
+    report = dict(origin="https://example.test", build="sha1", role="admin", sport="soccer", viewport="desktop",
+                  fixtureState="owned", batchStartedAt=1, browserStartedAt=2, elapsedMs=3,
+                  visits=[dict(path="/teams", actions=[action])], remaining={"A": ["reload"]})
+    path.write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="shared checks"):
+        audit.record_sweep(path)
+    action["permissionBoundary"] = False
+    path.write_text(json.dumps(report))
+    for _ in range(2):
+        audit.record_sweep(path)
+    status = audit.status()
+    assert len(status["sweeps"]) == 1
+    status["cases"][0]["scenario"].update(roles=["coach", "outsider"], route="/teams")
+    q = audit_queue(status)
+    first = next_visits(status, q)[0]
+    assert first["close_first"] == ["A"]
+    assert [x["role"] for x in first["case_focus"]["A"]["verified_checks"]] == ["coach"]
+    assert q["progress"]["completed"] == 0

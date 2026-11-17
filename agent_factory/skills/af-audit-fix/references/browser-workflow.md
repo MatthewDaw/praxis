@@ -90,3 +90,27 @@ partial observations if an assertion throws. A missed selector calls for
 triage. Reuse the log for each applicable result. Only record a scenario verdict
 after its expected behavior has been verified. Use interactive exploration when
 a page reveals an unfamiliar control.
+
+For initial audit checkpoints pass role, sport, viewport, fixtureState, the
+pinned build string and ledgerCommand (an argv array ending in the run ID) to
+runPageSweep. The managed supervisor sets AF_AUDIT_BATCH_STARTED_MS. Standalone
+callers supply batchStartedAt in epoch milliseconds at assignment start. Each
+structured action must return its actual observation after asserting it.
+
+```js
+await visit(path, async (page, check, remaining) => {
+  await check({caseId, id: 'saved-score', action: 'Reload the game',
+    expected: 'The submitted score persists'}, async () => {
+    await page.reload();
+    await expect(scoreCell).toHaveText(savedScore);
+    return await scoreCell.innerText();
+  });
+  remaining(caseId, ['Verify the affected coach can see the updated score']);
+});
+```
+
+For shared behavior explicitly set permissionBoundary to false, equivalentRoles
+and equivalenceBasis. Permission checks always run directly. Use the receipt
+on the returned report for timing. Retry an interrupted import with record-sweep
+--input pointing to the same retained file. Record final case verdicts through
+the existing verdict validator, referencing the single sweep artifact.

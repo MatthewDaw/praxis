@@ -48,6 +48,7 @@ def run_turn(config: dict, env: dict, prompt: str, label: str) -> int:
     prompt_file = attempt / 'prompt.md'
     prompt_file.write_text(prompt)
     prompt_file.chmod(0o600)
+    env = {**env, 'AF_AUDIT_BATCH_STARTED_MS': str(time.time_ns() // 1_000_000)}
     result = subprocess.run(agent_command(config, prompt_file, attempt / 'process'),
                             cwd=config['worktree'], env=env, capture_output=True, text=True)
     print(json.dumps({'event': 'audit_agent_turn', 'attempt': str(attempt),

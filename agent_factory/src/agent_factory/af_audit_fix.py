@@ -260,6 +260,74 @@ class Audit:
         self.patch(fact, changes)
         return acknowledgment if receipt else self.status()
 
+    def record_sweep(self, path: Path) -> dict:
+        """Attach the browser's action evidence in one write. Verdicts remain explicit."""
+        from time import time_ns
+        recording = time_ns() // 1_000_000
+        raw = path.read_bytes()
+        report = json.loads(raw)
+        runs = self.client.facts_by(category=CATEGORY, meta={"audit_run": self.run, "audit_key": "run"},
+                                    state="any", **self.scope)
+        require(len(runs) == 1, "expected one audit run")
+        run = runs[0]["meta"]
+        require(run["phase"] == "audit", "sweep checkpoints require an open initial audit")
+        require(report.get("build") == run["initial_build"] and
+                urlsplit(report.get("origin", ""))[:2] == urlsplit(run["target"])[:2], "sweep target or build differs")
+        scope = {key: report.get(key) for key in ("role", "sport", "viewport", "fixtureState")}
+        require(all(nonempty(v) for v in scope.values()), "explicit role, sport, viewport and fixtureState required")
+        start, browser, elapsed = (report.get(k) for k in ("batchStartedAt", "browserStartedAt", "elapsedMs"))
+        require(all(type(t) is int for t in (start, browser, elapsed)) and
+                0 < start <= browser <= recording and elapsed >= 0, "invalid sweep timing")
+        checks = []
+        routes = []
+        for visit in report["visits"]:
+            route = visit["path"]
+            require(nonempty(route) and route.startswith("/") and not route.startswith("//")
+                    and not urlsplit(route).query, "use a local route without query parameters")
+            routes.append(route)
+            for action in visit["actions"]:
+                if "caseId" not in action:
+                    continue
+                require(action["caseId"] in run["case_ids"], "unknown sweep case")
+                keys = ("id", "action", "expected", "actual")
+                require(all(nonempty(action.get(k)) for k in keys) and type(action.get("verified")) is bool,
+                        "incomplete action evidence")
+                entry = {k: action[k] for k in (*keys, "caseId", "verified")}
+                roles = action.get("equivalentRoles", [])
+                boundary = action.get("permissionBoundary", True)
+                require(type(boundary) is bool and isinstance(roles, list) and all(nonempty(r) for r in roles),
+                        "invalid profile scope")
+                if roles:
+                    require(action["verified"] and not boundary and nonempty(action.get("equivalenceBasis")),
+                            "shared checks need verified behavior and an explicit equivalence basis")
+                    entry.update(equivalentRoles=roles, equivalenceBasis=action["equivalenceBasis"])
+                checks.append(dict(entry, route=route, permissionBoundary=boundary))
+        remaining = report.get("remaining", {})
+        checked_ids = {a["caseId"] for a in checks}
+        require(checks and isinstance(remaining, dict) and set(remaining) <= checked_ids and
+                all(isinstance(items, list) and all(nonempty(v) for v in items) for items in remaining.values()),
+                "remaining steps must reference exercised scenarios")
+        sha = hashlib.sha256(raw).hexdigest()
+        key = "sweep:" + sha
+        data = dict(scope=scope, checks=checks, remaining=remaining, routes=routes,
+                    artifact={"uri": path.resolve().as_uri(), "sha256": sha},
+                    started=start, browser_ms=elapsed, planning_ms=browser-start, recording_started=recording)
+        require(redact_secrets(json.dumps(data)) == json.dumps(data), "redact sweep evidence")
+        existing = self.client.facts_by(category=CATEGORY, meta={"audit_run": self.run, "audit_key": key},
+                                        state="any", **self.scope)
+        if existing:
+            saved = existing[0]["meta"]
+        else:
+            self.client._request("POST", "/insights", body={
+                "insight": f"Audit {self.project}/{self.run}: {key}", "category": CATEGORY, "raw": True,
+                "meta": {"audit_run": self.run, "audit_key": key, **data},
+            }, **self.scope)
+            saved = data
+        end = time_ns() // 1_000_000
+        return dict(key=key, actions=len(checks), recording_ms=end-recording,
+                    planning_ms=saved["planning_ms"], browser_ms=saved["browser_ms"],
+                    end_to_end_ms=end-start)
+
     def advance(self, gate: dict) -> dict:
         fact = self.one("run")
         run = fact["meta"]
@@ -353,6 +421,8 @@ class Audit:
                 links[case["case_id"]] = parent
         with_evidence = {links[c["case_id"]] for c in cases
                          if c["case_id"] in links and c["initial"]["status"] in {"passed", "failed"}}
+        sweeps = [f["meta"] for f in facts if f["meta"]["audit_key"].startswith("sweep:")]
+        with_evidence.update(check["caseId"] for sweep in sweeps for check in sweep["checks"])
         inventory_counts = dict.fromkeys(["untouched", "partial", "blocked", "passed", "failed"], 0)
         for case in cases:
             if case["case_id"] in original:
@@ -363,6 +433,7 @@ class Audit:
         return {"project": self.project, "run": self.run, "phase": run["phase"], "counts": counts,
                 "inventory_counts": inventory_counts, "added_cases": len(cases) - len(original) if original else None,
                 "coverage_links": links,
+                "sweeps": sweeps,
                 "full_coverage": counts["blocked"] == 0 and counts["not_run"] == 0,
                 "failed_ids": run.get("failed_ids", []), "run_meta": run, "cases": cases,
                 "regression_neighbors": [f["meta"] for f in facts if f["meta"]["audit_key"].startswith("neighbor:")]}
@@ -420,6 +491,7 @@ def main(argv: list[str] | None = None) -> int:
     record.add_argument("--receipt", action="store_true", help="return only the accepted case verdict")
     record.add_argument("--case", required=True)
     record.add_argument("--input", required=True)
+    sub.add_parser("record-sweep").add_argument("--input", required=True)
     advance = sub.add_parser("advance")
     advance.add_argument("--input", required=True)
     sub.add_parser("status")
@@ -430,7 +502,7 @@ def main(argv: list[str] | None = None) -> int:
         _praxis.assert_org_matches(args.org)
         audit = Audit(args.project, args.run)
         data = None
-        if hasattr(args, "input"):
+        if hasattr(args, "input") and args.command != "record-sweep":
             with open(args.input, encoding="utf-8") as handle:
                 data = json.load(handle)
         if args.command == "init":
@@ -440,6 +512,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "check":
             checks = audit.check_many(args.case)
             output = checks[0] if len(checks) == 1 else checks
+        elif args.command == "record-sweep":
+            output = audit.record_sweep(Path(args.input))
         elif args.command == "record":
             output = audit.record(args.case, data, receipt=args.receipt)
         elif args.command == "advance":
