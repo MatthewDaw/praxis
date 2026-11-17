@@ -455,3 +455,44 @@ def test_identity_wait_reprobes_and_then_runs_without_anonymous_turn(tmp_path, m
     assert waits == [30]
     assert len(turns) == 1
     assert 'AUTH' in turns[0]
+
+
+def test_audit_prepares_remaining_cases_before_browser_and_resumes_saved_plans(tmp_path, monkeypatch):
+    from af_audit_prepare import preparation_path, save_preparation
+
+    config = audit_values(tmp_path)
+    config.update(factory='/factory', audit_no_progress_limit=2)
+    org = {'PRAXIS_ORG': 'test-org'}
+    scope = dict(org='test-org', project=config['project'], run=config['audit_run'], build='rev')
+    original = dict(route='/teams', roles=['admin'], fixture='owned team',
+                    steps=['Save a name and reload'], expected='Updated name persists',
+                    cleanup='Restore the original name', reuse=[])
+    path = preparation_path(config)
+    save_preparation(path, scope, {'saved': dict(id='saved', **original)})
+    state = {
+        'phase': 'audit',
+        'run_meta': {'initial_build': 'rev', 'inventory_ids': ['done', 'saved', 'pending']},
+        'cases': [{'case_id': i, 'scenario': {'route': '/teams'}, 'initial': {'status': verdict}}
+                  for i, verdict in [('done', 'passed'), ('saved', 'not_run'), ('pending', 'not_run')]],
+    }
+    events = []
+
+    def turn(_config, _env, prompt, phase):
+        events.append(phase)
+        if phase == 'prepare':
+            request = Path(prompt.split(' in ')[1].split('. Use local')[0])
+            assert [c['case_id'] for c in json.loads(request.read_text())['cases']] == ['pending']
+            request.with_name('plans.json').write_text(json.dumps([dict(id='pending', **original)]))
+        else:
+            assert str(path) in prompt
+            assert {p['id'] for p in json.loads(path.read_text())['plans']} == {'saved', 'pending'}
+            state['phase'] = 'complete'
+        return 0
+
+    monkeypatch.setattr(audit_supervisor, 'status', lambda *_: dict(state))
+    monkeypatch.setattr(audit_supervisor, 'run_turn', turn)
+    monkeypatch.setattr(audit_supervisor, 'browser_preflight', lambda *_: events.append('browser probe'))
+    monkeypatch.setattr(audit_supervisor, 'plan_assignment', lambda *_: {
+        'no_runnable_originals': False, 'runnable_original_ids': ['pending']})
+    assert audit_supervisor.supervise(config, org) == 0
+    assert events == ['prepare', 'browser probe', 'audit']

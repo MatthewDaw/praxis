@@ -25,10 +25,9 @@ VERIFY external signals → FINISH. Do not place authored check lists on tickets
    jobs. Preserve live work and existing authorization. A request to audit does
    not itself authorize charges, real messages, deleting user data or production
    deployment. Reuse authorization already supplied in the session.
-2. Read [browser-workflow.md](references/browser-workflow.md). Combine Anthropic's
-   reconnaissance and evidence collection with Playwright's planner, generator
-   and healer. Initialize the upstream definitions for the chosen engine and
-   installed Playwright version; actually explore and execute the generated tests.
+2. Read [browser-workflow.md](references/browser-workflow.md). Initialize the
+   upstream definitions for the chosen engine and installed Playwright version.
+   Perform reconnaissance and execute generated tests after source preparation.
 3. Derive stable scenarios from source routes, actions, requirements and permission
    boundaries, then expand them from rendered controls. Include CRUD, persistence
    after reload, validation, permission denial, tenant isolation, uploads/downloads,
@@ -44,6 +43,28 @@ VERIFY external signals → FINISH. Do not place authored check lists on tickets
    real execution evidence. Preserve console/network findings and cleanup IDs.
    Reconcile every discovered control with a scenario or an explained exclusion.
    A blocked or untested scenario never counts as passed.
+
+## Prepare the remaining scenarios before browser execution
+
+For a mapped initial audit, prepare a source-based plan for every outstanding
+original scenario before opening the browser. Split independent preparation by
+scenario ID and run the groups in parallel. Use the registered inventory,
+local product source, existing tests and fixture notes. Reuse existing plans,
+scoped browser evidence and linked verdicts. Exclude originals with a final
+verdict. For partially tested cases, write only the remaining checks and link
+the prior evidence. Preparation does not execute product tests or record verdicts.
+
+Put the route, roles, fixture, concrete steps, expected outcome, cleanup and
+reuse references in each plan. Group related scenarios by page, role, sport,
+viewport and fixture. Resolve unknown selectors using a small browser sample
+after preparation. In execution, read the assigned plans and any checkpoints
+recorded since preparation. Close compatible checks in one visit.
+
+The managed supervisor persists the run- and build-scoped plans under
+`runtime/state/audit-preparation-<run>.json` and resumes incomplete preparation
+by scenario ID. It runs up to three preparation groups at once and uses the
+same preparation workflow for Codex and Claude.
+For unmanaged runs, use the same preparation and reuse steps before execution.
 
 ## Use each page visit for a batch
 

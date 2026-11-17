@@ -9,6 +9,7 @@ import tempfile
 import time
 import uuid
 
+from af_audit_prepare import prepare
 from af_audit_prerequisites import identity_plan, directive
 
 
@@ -57,15 +58,21 @@ def run_turn(config: dict, env: dict, prompt: str, label: str) -> int:
     return result.returncode
 
 
+def browser_preflight(config: dict, env: dict) -> None:
+    probe = subprocess.run(config['audit_browser_probe'], cwd=config['worktree'], env=env,
+                           capture_output=True, text=True, timeout=120)
+    if probe.returncode:
+        raise RuntimeError('audit browser preflight failed; remote audit not started')
+
+
 def preflight(config: dict, env: dict) -> int:
     current = status(config, env)
     if current['phase'] in TERMINAL:
         print(json.dumps({'phase': current['phase'], 'already_terminal': True}), flush=True)
         return 0
-    probe = subprocess.run(config['audit_browser_probe'], cwd=config['worktree'], env=env,
-                           capture_output=True, text=True, timeout=120)
-    if probe.returncode:
-        raise RuntimeError('audit browser preflight failed; remote audit not started')
+    browser_deferred = current["phase"] == "audit" and "inventory_ids" in current.get("run_meta", {})
+    if not browser_deferred:
+        browser_preflight(config, env)
     with tempfile.TemporaryDirectory(prefix='.af-audit-probe-', dir=config['worktree']) as directory:
         root = Path(directory)
         expected = uuid.uuid4().hex
@@ -79,7 +86,7 @@ def preflight(config: dict, env: dict) -> int:
         if result or not destination.is_file() or destination.read_text() != expected:
             raise RuntimeError('audit model read/write preflight failed; remote audit not started')
     print(json.dumps({'event': 'audit_preflight_passed', 'engine': config['backend'],
-                      'browser_executed': True, 'model_file_tools_verified': True}), flush=True)
+                      'browser_executed': not browser_deferred, 'model_file_tools_verified': True}), flush=True)
     return 0
 
 
@@ -102,6 +109,7 @@ def plan_assignment(config: dict, current: dict, env: dict) -> dict:
 def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
     no_progress = 0
     identity_notice = None
+    browser_ready = False
     while True:
         before = status(config, env)
         phase = before['phase']
@@ -118,8 +126,17 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
             raise ValueError('canonical phase is outside this coordinator assignment')
         assignment = ''
         if phase == 'audit':
+            preparation, ready = prepare(config, env, before, run_turn)
+            if not ready:
+                print(json.dumps({'event': 'audit_preparation_requires_attention',
+                                  'reason': 'repeated turns did not produce valid plans'}), flush=True)
+                return 78
             plan = plan_assignment(config, before, env)
             assignment = directive(plan)
+            if preparation:
+                assignment += (f"\nRead prepared plans in {preparation} for assigned case IDs only. "
+                               "Use current ledger checkpoints and verdicts to skip completed work. "
+                               "Execute the remaining checks from the plans and record case verdicts.\n")
             if plan['no_runnable_originals'] and plan['deferred_identity_ids']:
                 notice = fingerprint(plan['dependency'])
                 if notice != identity_notice:
@@ -132,6 +149,9 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                     sleep(30)
                     continue
                 return 78
+        if phase == 'audit' and not browser_ready and 'inventory_ids' in before.get('run_meta', {}):
+            browser_preflight(config, env)
+            browser_ready = True
         skill = Path(config['factory']) / 'skills/af-audit-fix/SKILL.md'
         prompt = (f'Execute a bounded batch through the af-audit-fix skill at {skill}.\n'
                   f'Canonical scope: org={env["PRAXIS_ORG"]}, project={config["project"]}, '

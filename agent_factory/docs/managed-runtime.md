@@ -88,13 +88,18 @@ An audit profile also supplies:
 }
 ```
 
-The probe must actually launch the browser, navigate to the intended target and
-assert readiness; it exits nonzero on failure. Use job-owned browser dependencies
-and a configured explicit target. `--start` checks canonical Praxis state, executes
-this probe and verifies a real model turn reading and writing a random scratch
-value before enabling the service. Login status or an agent's printed claim is
-insufficient. Run `bin/af-runtime check` separately for a bounded setup smoke;
-it does not launch the full audit.
+The probe must launch the browser, navigate to the intended target and assert
+readiness. Use job-owned browser dependencies and an explicit target.
+`--start` checks canonical Praxis state and verifies model file access before
+enabling the service. For mapped initial audits, the supervisor runs the browser
+probe after all outstanding scenarios have source-based plans. Other phases
+retain the setup probe. `bin/af-runtime check` runs the bounded setup check.
+
+The default preparation pass writes resumable plans to
+`runtime/state/audit-preparation-<run>.json`. It skips terminal originals and
+already prepared IDs, passes scoped evidence to up to three preparation workers, and
+continues to execution after validating the remaining plans. The audit worker
+uses live checkpoints and verdicts to reuse completed work.
 
 The project stays the real Praxis project. Audit units and the default runtime
 directory add `-audit-<run>` so they cannot replace that project's build service.
