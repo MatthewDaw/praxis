@@ -155,6 +155,10 @@ that instance. Verify fixture readiness and continue the same scenario. If
 the setup would hold up the batch, record the blocker and attempted remedy so
 the supervisor can requeue that original alongside other work.
 
+Use the blocker prefix `Local browser interrupted:` for a browser crash or
+resource exhaustion in a disposable local run. The supervisor checks a fresh
+browser session before requeuing these cases. Continue from retained evidence.
+
 Check whether the application can consume the requested fixture before
 creating it. Record demonstrated missing behavior as a product failure.
 If the scenario allows a scoped redirect or unavailable state, directly

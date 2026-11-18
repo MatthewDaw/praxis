@@ -16,18 +16,27 @@ SELF_RECOVERY = (
     "prerequisite and the recovery you attempted."
 )
 MAX_PROVISION_ATTEMPTS = 3
+BROWSER_BLOCKERS = ("Local browser interrupted:", "Local runtime interrupted: Chromium")
+BROWSER_HANDOFF = (
+    "Fresh Chromium preflight passed. Reuse retained evidence. Resume the remaining checks "
+    "in a new browser context. For a service-error simulation, mount the app before intercepting "
+    "the specific local API request and remove the interception before testing recovery."
+)
+BROWSER_REVISION = "fresh-browser-v1"
+
+
+def local_recovery_enabled(config, current):
+    target = urlsplit(current["run_meta"].get("target", ""))
+    return (config.get("audit_smoke_local_recovery", False)
+            and target.scheme in ("http", "https") and target.hostname in ("127.0.0.1", "::1", "localhost"))
 
 
 def offer_local_recovery(config, current, retries, deferred, save):
     """Offer one worker-led recovery alongside normal work."""
-    if not config.get("audit_smoke_local_recovery"):
+    if not local_recovery_enabled(config, current):
         return retries
     from agent_factory.af_audit_queue import smoke_retry_due
-
     meta = current["run_meta"]
-    target = urlsplit(meta.get("target", ""))
-    if target.scheme not in ("http", "https") or target.hostname not in ("127.0.0.1", "::1", "localhost"):
-        return retries
     done = {case["case_id"] for case in current["cases"] if case["initial"]["status"] in ("passed", "failed")}
     reserved = {key for key, assignment in meta.get("scheduling_assignments", {}).items()
                 if assignment.get("status") == "reserved"}
@@ -38,7 +47,10 @@ def offer_local_recovery(config, current, retries, deferred, save):
         return retries
     for case_id in eligible:
         record = current.get("smoke", {}).get(case_id, {})
-        if record.get("result", {}).get("status") != "blocked":
+        result = record.get("result", {})
+        if result.get("status") != "blocked":
+            continue
+        if config.get("audit_browser_probe") and result.get("blocker", "").startswith(BROWSER_BLOCKERS):
             continue
         attempted = [record, *record.get("prior_attempts", [])]
         if any(entry.get("retry") == SELF_RECOVERY for entry in attempted):
@@ -57,7 +69,14 @@ def recover_fixtures(config, current, env, save, *, run=execute, now=time.time):
     inventory = set(meta["inventory_ids"])
     already_done = {c["case_id"] for c in current["cases"] if c["initial"]["status"] in ("passed", "failed")}
     waiting = False
-    for key, provider in config.get("audit_smoke_fixture_providers", {}).items():
+    providers = list(config.get("audit_smoke_fixture_providers", {}).items())
+    browser_probe = config.get("audit_browser_probe") if local_recovery_enabled(config, current) else None
+    if browser_probe:
+        providers.insert(0, (":browser-preflight", {
+            "probe": browser_probe, "blocker_prefixes": BROWSER_BLOCKERS, "handoff": BROWSER_HANDOFF,
+        }))
+    for key, provider in providers:
+        browser = key == ":browser-preflight"
         prefixes = tuple(provider.get("blocker_prefixes", []))
         candidates = {}
         for case_id in inventory.intersection(provider.get("case_ids", inventory)):
@@ -65,7 +84,13 @@ def recover_fixtures(config, current, env, save, *, run=execute, now=time.time):
             result = record.get("result", {})
             if case_id in already_done or result.get("status") != "blocked":
                 continue
-            if not prefixes or result.get("blocker", "").startswith(prefixes):
+            blocker = result.get("blocker", "")
+            if browser_probe and not browser and blocker.startswith(BROWSER_BLOCKERS):
+                continue
+            if browser and any(BROWSER_REVISION in (entry.get("retry") or "")
+                               for entry in [record, *record.get("prior_attempts", [])]):
+                continue
+            if not prefixes or blocker.startswith(prefixes):
                 candidates[case_id] = record
         if not candidates:
             continue
@@ -76,15 +101,20 @@ def recover_fixtures(config, current, env, save, *, run=execute, now=time.time):
             waiting |= not state.get("revision") and state.get("attempts", 0) < MAX_PROVISION_ATTEMPTS
             continue
         state["next_probe"] = clock + 300
-        revision = observe(provider["probe"], config, env, run)
+        if browser:
+            observation = run(provider["probe"], env, config["worktree"], 30)
+            revision = BROWSER_REVISION if observation.get("ok") else None
+        else:
+            revision = observe(provider["probe"], config, env, run)
         if revision is None and state.get("attempts", 0) < MAX_PROVISION_ATTEMPTS:
             state.pop("revision", None)
             state["attempts"] = state.get("attempts", 0) + 1
-            states[key] = state
-            # Persist the attempt before provision so restarts cannot loop on failures.
-            save({"smoke_fixture_recovery": states})
-            run(provider["provision"], env, config["worktree"], 90)
-            revision = observe(provider["probe"], config, env, run)
+            if not browser:
+                states[key] = state
+                # Persist the attempt before provision so restarts cannot loop on failures.
+                save({"smoke_fixture_recovery": states})
+                run(provider["provision"], env, config["worktree"], 90)
+                revision = observe(provider["probe"], config, env, run)
         if revision:
             state.update(revision=revision, attempts=0)
             instruction = f"{provider['handoff']} Verified fixture revision {revision}."

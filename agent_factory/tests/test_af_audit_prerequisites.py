@@ -208,6 +208,42 @@ def test_failed_fixture_provision_waits_only_until_attempts_are_exhausted():
     assert calls == ["/probe", "/provision", "/probe"] * 3
 
 
+def test_local_browser_interruption_retries_only_after_fresh_browser_probe():
+    from af_audit_fixture_recovery import offer_local_recovery, recover_fixtures
+
+    state = current()
+    state["run_meta"]["target"] = "http://127.0.0.1:15184"
+    state["smoke"] = {"AUTH": {"result": {"status": "blocked", "blocker": "Local runtime interrupted: Chromium crashed"}}}
+    config = {
+        "worktree": "/tmp", "audit_smoke_local_recovery": True, "audit_browser_probe": ["/browser-probe"],
+        "audit_smoke_fixture_providers": {
+            "runtime": {"blocker_prefixes": ["Local runtime interrupted:"], "probe": ["/api-probe"],
+                        "provision": ["/api-start"], "handoff": "API ready."},
+        },
+    }
+    calls = []
+    ready = False
+
+    def run(argv, *_):
+        calls.append(argv)
+        return {"ok": ready}
+
+    def save(changes):
+        state["run_meta"].update(copy.deepcopy(changes))
+
+    assert recover_fixtures(config, state, {}, save, run=run, now=lambda: 1) == ({}, True)
+    assert offer_local_recovery(config, state, {}, set(), save) == {}
+    assert recover_fixtures(config, state, {}, save, run=run, now=lambda: 90) == ({}, True)
+    ready = True
+    retries, waiting = recover_fixtures(config, state, {}, save, run=run, now=lambda: 301)
+    assert not waiting
+    assert "Fresh Chromium preflight passed" in retries["AUTH"]
+    assert calls == [["/browser-probe"], ["/browser-probe"]]
+    state["smoke"]["AUTH"]["prior_attempts"] = [{"retry": retries["AUTH"]}]
+    assert recover_fixtures(config, state, {}, save, run=run, now=lambda: 601) == (retries, False)
+    assert len(calls) == 2
+
+
 def test_local_smoke_recovery_offers_one_attempt_alongside_pending_work():
     from af_audit_fixture_recovery import SELF_RECOVERY, offer_local_recovery
 

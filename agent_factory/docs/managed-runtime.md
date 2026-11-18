@@ -142,6 +142,10 @@ unresolved blockers after recovery is exhausted, it exits with status 78.
 Provider commands come from the runtime profile.
 
 Set `audit_smoke_local_recovery: true` for a loopback-only disposable run.
+For a blocked smoke result with the prefix `Local browser interrupted:`, the
+supervisor uses the configured browser preflight to verify that a fresh
+browser can load the app. A successful API health check alone cannot requeue
+this browser-specific interruption. The retry preserves completed checks.
 When no verified fixture retry is already queued, the handler queues one
 worker-led recovery alongside ordinary work. Each eligible blocker gets one
 such recovery attempt.
