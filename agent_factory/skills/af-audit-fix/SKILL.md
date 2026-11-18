@@ -192,6 +192,16 @@ ineligible, repair it or provision a separate eligible fixture, then retry the
 original action. Record the exact missing prerequisite as blocked if supported
 local setup cannot supply it.
 
+When a feature expected to be available appears locked, empty, or denied,
+check the signed-in actor's effective access to the exact owned resource and
+any separate feature entitlement through supported app reads. For disposable
+local runs, provision the narrow missing assignment or an existing test or
+complimentary entitlement. Confirm readiness as the affected actor before
+reopening the browser action. Record the fixture separately from the product
+verdict and verify teardown of temporary grants. A synthetic entitlement
+can establish access for a feature test. A paid-flow scenario needs its own
+checkout evidence.
+
 At every batch boundary, inspect current private fixture handoffs and prerequisite
 observations before selecting work. Group a shared missing prerequisite once in
 Praxis, with its affected original IDs and the exact evidence needed to unblock
