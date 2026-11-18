@@ -182,7 +182,7 @@ def test_runtime_recovery_only_requeues_matching_blockers_in_scope():
     assert set(recover_fixtures(cfg, state, {}, lambda _: None, run=observe)) == {"AUTH"}
 
 
-def test_local_smoke_recovery_waits_for_work_and_offers_one_attempt():
+def test_local_smoke_recovery_offers_one_attempt_alongside_pending_work():
     from af_audit_fixture_recovery import SELF_RECOVERY, offer_local_recovery
 
     state = current()
@@ -193,10 +193,12 @@ def test_local_smoke_recovery_waits_for_work_and_offers_one_attempt():
     }
     config = {"audit_smoke_local_recovery": True}
     saved = []
-    assert offer_local_recovery(config, state, {}, {"TEAMS"}, saved.append) == {}
-    state["smoke"]["PUBLIC"] = {"result": {"status": "passed"}}
+    verified = {"TEAMS": "New fixture independently verified"}
+    assert offer_local_recovery(config, state, verified, set(), saved.append) == verified
+    assert saved == []
     assert offer_local_recovery(config, state, {}, {"TEAMS"}, saved.append) == {"AUTH": SELF_RECOVERY}
     assert saved == [{"smoke_retries": {"AUTH": SELF_RECOVERY}}]
+    assert offer_local_recovery(config, state, {"AUTH": SELF_RECOVERY}, set(), saved.append) == {"AUTH": SELF_RECOVERY}
     state["smoke"]["AUTH"]["retry"] = SELF_RECOVERY
     assert offer_local_recovery(config, state, {"AUTH": SELF_RECOVERY}, {"TEAMS"}, saved.append) == {"AUTH": SELF_RECOVERY}
     assert len(saved) == 1

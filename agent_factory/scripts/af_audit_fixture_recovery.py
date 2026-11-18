@@ -18,32 +18,34 @@ SELF_RECOVERY = (
 
 
 def offer_local_recovery(config, current, retries, deferred, save):
-    """Offer one worker-led recovery pass after runnable smoke work drains."""
+    """Offer one worker-led recovery alongside normal work."""
     if not config.get("audit_smoke_local_recovery"):
         return retries
-    from agent_factory.af_audit_queue import smoke_progress
+    from agent_factory.af_audit_queue import smoke_retry_due
 
     meta = current["run_meta"]
     target = urlsplit(meta.get("target", ""))
     if target.scheme not in ("http", "https") or target.hostname not in ("127.0.0.1", "::1", "localhost"):
         return retries
-    if smoke_progress({**current, "run_meta": {**meta, "smoke_retries": retries}})["pending"]:
-        return retries
     done = {case["case_id"] for case in current["cases"] if case["initial"]["status"] in ("passed", "failed")}
     reserved = {key for key, assignment in meta.get("scheduling_assignments", {}).items()
                 if assignment.get("status") == "reserved"}
-    updated = dict(retries)
-    for case_id in set(meta["inventory_ids"]) - done - deferred - reserved:
+    excluded = done | deferred | reserved
+    eligible = [case_id for case_id in meta["inventory_ids"] if case_id not in excluded]
+    dispatch = {**current, "run_meta": {**meta, "smoke_retries": retries}}
+    if any(smoke_retry_due(dispatch, case_id) for case_id in eligible):
+        return retries
+    for case_id in eligible:
         record = current.get("smoke", {}).get(case_id, {})
         if record.get("result", {}).get("status") != "blocked":
             continue
         attempted = [record, *record.get("prior_attempts", [])]
         if any(entry.get("retry") == SELF_RECOVERY for entry in attempted):
             continue
-        updated[case_id] = SELF_RECOVERY
-    if updated != retries:
+        updated = {**retries, case_id: SELF_RECOVERY}
         save({"smoke_retries": updated})
-    return updated
+        return updated
+    return retries
 
 
 def recover_fixtures(config, current, env, save, *, run=execute, now=time.time):
