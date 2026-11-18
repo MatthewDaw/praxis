@@ -136,6 +136,10 @@ def test_audit_install_uses_shared_runtime_and_engine_without_forcing_model(tmp_
     assert Path(config['audit_prompt_file']).read_text() == Path(raw['audit_prompt_file']).read_text()
     assert Path(config['audit_prompt_file']).stat().st_mode & 0o077 == 0
     assert 'RestartPreventExitStatus=78' in setup.units(config)[config['service']]
+    python = Path(config['runtime']) / 'bin/python'
+    result = subprocess.run([str(python), '-c', 'import sys; print(sys.version_info.major)'],
+                            capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == '3'
 
 
 def test_audit_profile_refuses_ambiguous_phase_and_shell_probe(tmp_path):

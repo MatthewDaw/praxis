@@ -260,8 +260,11 @@ def install_locked(values: dict, source: Path, *, unit_dir: Path | None,
     private_write(existing, json.dumps(config, indent=2))
     environment = runtime_environment(config, dict(os.environ))
     entry = Path(config['factory']) / 'scripts/af_runtime_entry.py'
-    for name, role in [('af-runtime', None), ('node', 'node'), ('claude', 'claude'),
-                       ('codex', 'codex'), ('factory-python', 'python')]:
+    launchers = [('af-runtime', None), ('node', 'node'), ('claude', 'claude'),
+                 ('codex', 'codex'), ('factory-python', 'python')]
+    if config['mode'] == 'audit':
+        launchers.append(('python', 'python'))
+    for name, role in launchers:
         prefix = f'#!{config["python"]}\nimport os,sys\n'
         body = f'os.environ["AF_RUNTIME_CONFIG"]={str(existing)!r}\n'
         argv = '[sys.argv[0], *sys.argv[1:]]' if role is None else f'[sys.argv[0], {role!r}, *sys.argv[1:]]'
