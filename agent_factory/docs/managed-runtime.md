@@ -117,6 +117,12 @@ when the workload warrants it. `complete` and `partial` are reported distinctly;
 a terminal partial run still has untested coverage. An explicit stop retains
 Praxis progress and evidence for a later restart.
 
+For hybrid audits, create a separate run for the local target and use
+`audit_smoke_case_ids` to limit the deployed worker to environment-dependent
+originals. The run IDs keep reports, evidence hashes, and verdicts separate.
+The worker checks only the configured scope while the full inventory stays
+available in the original ledger.
+
 ## Smoke fixture recovery
 
 A smoke audit can configure `audit_smoke_fixture_providers` as an object keyed

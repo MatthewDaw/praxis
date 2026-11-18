@@ -56,6 +56,10 @@ def settings(values: dict) -> dict:
     if result['mode'] == 'audit':
         if type(result['audit_smoke_pass']) is not bool:
             raise ValueError('audit_smoke_pass must be a boolean')
+        case_ids = result.get('audit_smoke_case_ids')
+        if case_ids is not None and (not result['audit_smoke_pass'] or not isinstance(case_ids, list)
+                                    or any(not isinstance(i, str) or not i for i in case_ids)):
+            raise ValueError('audit_smoke_case_ids must list original IDs in smoke mode')
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,95}', result.get('audit_run', '')):
             raise ValueError('audit_run must name an explicit Praxis run')
         if not Path(result.get('audit_prompt_file', '')).is_absolute():

@@ -497,3 +497,20 @@ def test_audit_prepares_remaining_cases_before_browser_and_resumes_saved_plans(t
         'no_runnable_originals': False, 'runnable_original_ids': ['pending']})
     assert audit_supervisor.supervise(config, org) == 0
     assert events == ['prepare', 'browser probe', 'audit']
+
+
+def test_hybrid_scope_limits_smoke_completion_to_assigned_originals():
+    from agent_factory.af_audit_queue import smoke_progress
+
+    current = {
+        "run_meta": {"inventory_ids": ["local", "deployed"]},
+        "cases": [
+            {"case_id": "local", "initial": {"status": "not_run"}},
+            {"case_id": "deployed", "initial": {"status": "passed"}},
+        ],
+    }
+    scope = audit_supervisor.scoped_smoke_status(current, ["deployed"])
+    assert smoke_progress(scope)["pending"] == 0
+    assert smoke_progress(current)["pending"] == 1
+    with pytest.raises(ValueError, match="unknown"):
+        audit_supervisor.scoped_smoke_status(current, ["typo"])

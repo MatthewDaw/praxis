@@ -109,6 +109,18 @@ def plan_assignment(config: dict, current: dict, env: dict) -> dict:
     return json.loads(result.stdout)
 
 
+def scoped_smoke_status(current, configured_ids):
+    if configured_ids is None:
+        return current
+    meta = current["run_meta"]
+    known = set(meta["inventory_ids"])
+    requested = set(configured_ids)
+    if requested - known:
+        raise ValueError("smoke scope references unknown original IDs")
+    inventory_ids = [case_id for case_id in meta["inventory_ids"] if case_id in requested]
+    return {**current, "run_meta": {**meta, "inventory_ids": inventory_ids}}
+
+
 def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
     no_progress = 0
     identity_notice = None
@@ -118,6 +130,8 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
     while True:
         before = status(config, env)
         phase = before['phase']
+        if smoke and phase == 'audit':
+            before = scoped_smoke_status(before, config.get("audit_smoke_case_ids"))
         print(json.dumps({'event': 'audit_phase_observed', 'phase': phase,
                           'counts': before.get('counts', {})}), flush=True)
         if smoke and phase == 'audit':
@@ -145,7 +159,7 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                 if "smoke_retries" in plan:
                     before = {**before, "run_meta": {**before["run_meta"], "smoke_retries": plan["smoke_retries"]}}
                 progress = smoke_progress(before)
-                if progress["total"] and progress["pending"] == 0:
+                if (progress["total"] or config.get("audit_smoke_case_ids") is not None) and progress["pending"] == 0:
                     return 0
             assignment = directive(plan)
             if preparation and not plan['no_runnable_originals']:
