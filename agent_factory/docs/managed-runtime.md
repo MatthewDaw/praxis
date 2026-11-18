@@ -139,6 +139,13 @@ affected smoke cases once per verified fixture revision. Recoverable attempts
 are bounded and saved in Praxis. Unsupported dependencies remain visible
 as blocked. Provider commands come from the runtime profile.
 
+Set `audit_smoke_local_recovery: true` for a loopback-only disposable run. Once
+ordinary work and verified fixture retries have drained, the worker gets one
+recovery attempt for each remaining in-scope blocker it can act on locally.
+The prior blocker stays in the ledger, with the recovery outcome attached to
+the same original case. This does not apply to deployed targets, reserved
+assignments, or cases already deferred by a prerequisite handler.
+
 ## Existing laptop login
 
 Reuse an authenticated private Claude config directory. No API key is needed. When

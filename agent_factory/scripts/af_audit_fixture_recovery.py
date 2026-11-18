@@ -3,8 +3,47 @@ from __future__ import annotations
 
 import re
 import time
+from urllib.parse import urlsplit
 
 from af_audit_prerequisites import execute
+
+
+SELF_RECOVERY = (
+    "Local fixture recovery. Read the existing blocker and recover the prerequisite yourself "
+    "inside this run's disposable instance. Use real app operations or seed synthetic local "
+    "records, accounts, or emulator state as needed. Verify readiness and exercise the "
+    "remaining behavior before recording a verdict. If it stays blocked, record the exact "
+    "prerequisite and the recovery you attempted."
+)
+
+
+def offer_local_recovery(config, current, retries, deferred, save):
+    """Offer one worker-led recovery pass after runnable smoke work drains."""
+    if not config.get("audit_smoke_local_recovery"):
+        return retries
+    from agent_factory.af_audit_queue import smoke_progress
+
+    meta = current["run_meta"]
+    target = urlsplit(meta.get("target", ""))
+    if target.scheme not in ("http", "https") or target.hostname not in ("127.0.0.1", "::1", "localhost"):
+        return retries
+    if smoke_progress({**current, "run_meta": {**meta, "smoke_retries": retries}})["pending"]:
+        return retries
+    done = {case["case_id"] for case in current["cases"] if case["initial"]["status"] in ("passed", "failed")}
+    reserved = {key for key, assignment in meta.get("scheduling_assignments", {}).items()
+                if assignment.get("status") == "reserved"}
+    updated = dict(retries)
+    for case_id in set(meta["inventory_ids"]) - done - deferred - reserved:
+        record = current.get("smoke", {}).get(case_id, {})
+        if record.get("result", {}).get("status") != "blocked":
+            continue
+        attempted = [record, *record.get("prior_attempts", [])]
+        if any(entry.get("retry") == SELF_RECOVERY for entry in attempted):
+            continue
+        updated[case_id] = SELF_RECOVERY
+    if updated != retries:
+        save({"smoke_retries": updated})
+    return updated
 
 
 def recover_fixtures(config, current, env, save, *, run=execute, now=time.time):

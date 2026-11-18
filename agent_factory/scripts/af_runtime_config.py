@@ -56,6 +56,9 @@ def settings(values: dict) -> dict:
     if result['mode'] == 'audit':
         if type(result['audit_smoke_pass']) is not bool:
             raise ValueError('audit_smoke_pass must be a boolean')
+        local_recovery = result.get('audit_smoke_local_recovery', False)
+        if type(local_recovery) is not bool or (local_recovery and not result['audit_smoke_pass']):
+            raise ValueError('audit_smoke_local_recovery requires smoke mode and a boolean flag')
         case_ids = result.get('audit_smoke_case_ids')
         if case_ids is not None and (not result['audit_smoke_pass'] or not isinstance(case_ids, list)
                                     or any(not isinstance(i, str) or not i for i in case_ids)):

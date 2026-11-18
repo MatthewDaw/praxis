@@ -180,3 +180,25 @@ def test_runtime_recovery_only_requeues_matching_blockers_in_scope():
         return {"ok": True, "output": {"available": True, "revision": "healthy-1"}}
 
     assert set(recover_fixtures(cfg, state, {}, lambda _: None, run=observe)) == {"AUTH"}
+
+
+def test_local_smoke_recovery_waits_for_work_and_offers_one_attempt():
+    from af_audit_fixture_recovery import SELF_RECOVERY, offer_local_recovery
+
+    state = current()
+    state["run_meta"]["target"] = "http://127.0.0.1:15184"
+    state["smoke"] = {
+        "AUTH": {"result": {"status": "blocked", "blocker": "Missing local identity"}},
+        "TEAMS": {"result": {"status": "blocked", "blocker": "Missing local team"}},
+    }
+    config = {"audit_smoke_local_recovery": True}
+    saved = []
+    assert offer_local_recovery(config, state, {}, {"TEAMS"}, saved.append) == {}
+    state["smoke"]["PUBLIC"] = {"result": {"status": "passed"}}
+    assert offer_local_recovery(config, state, {}, {"TEAMS"}, saved.append) == {"AUTH": SELF_RECOVERY}
+    assert saved == [{"smoke_retries": {"AUTH": SELF_RECOVERY}}]
+    state["smoke"]["AUTH"]["retry"] = SELF_RECOVERY
+    assert offer_local_recovery(config, state, {"AUTH": SELF_RECOVERY}, {"TEAMS"}, saved.append) == {"AUTH": SELF_RECOVERY}
+    assert len(saved) == 1
+    state["run_meta"]["target"] = "https://dev.example.invalid"
+    assert offer_local_recovery(config, state, {}, set(), saved.append) == {}

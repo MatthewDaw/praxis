@@ -50,7 +50,8 @@ def execution_packet(current, plan_path, recent, *, smoke=False):
             "current": cases[case_id]["initial"],
             "checkpoint_focus": focus,
             "linked_verdicts": links[case_id],
-            **({"new_fixture": current["run_meta"]["smoke_retries"][case_id]}
+            **({"new_fixture": current["run_meta"]["smoke_retries"][case_id],
+                "prior_smoke_blocker": current["smoke"][case_id]["result"].get("blocker")}
                if smoke_retry_due(current, case_id) else {}),
         } for case_id, focus in selected])
         if len(packets) == (6 if smoke else 2):
