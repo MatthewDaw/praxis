@@ -360,3 +360,17 @@ def test_smoke_results_do_not_close_original_scenarios(audit):
     assert audit_queue(audit.status())["smoke_progress"] == {
         "total": 2, "passed": 1, "failed": 0, "blocked": 0, "reused_full": 1, "pending": 0,
     }
+
+
+def test_blocked_smoke_can_be_retried_after_a_fixture_change(audit):
+    from agent_factory.af_audit_queue import audit_queue
+
+    audit.record_smoke([{"case_id": "A", "result": evidence("blocked")}])
+    with pytest.raises(ValueError, match="already recorded"):
+        audit.record_smoke([{"case_id": "A", "result": evidence()}])
+    audit.patch(audit.one("run"), {"smoke_retries": {"A": "Owned fixture is ready"}})
+    assert audit_queue(audit.status())["smoke_progress"]["pending"] == 2
+    audit.record_smoke([{"case_id": "A", "result": evidence()}])
+    smoke = audit.status()["smoke"]["A"]
+    assert smoke["result"]["status"] == "passed"
+    assert smoke["prior_attempts"][0]["result"]["status"] == "blocked"

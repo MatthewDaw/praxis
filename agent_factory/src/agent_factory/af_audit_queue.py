@@ -18,6 +18,12 @@ def _context(scenario):
     )
 
 
+def smoke_retry_due(status, case_id):
+    record = status.get("smoke", {}).get(case_id, {})
+    retry = status.get("run_meta", {}).get("smoke_retries", {}).get(case_id)
+    return bool(retry and record.get("result", {}).get("status") == "blocked" and retry != record.get("retry"))
+
+
 def smoke_progress(status):
     """Present independent smoke outcomes, reusing original terminal verdicts."""
     meta = status.get("run_meta", {})
@@ -30,7 +36,7 @@ def smoke_progress(status):
             continue
         if case["initial"]["status"] in ("passed", "failed"):
             counts["reused_full"] += 1
-        elif case_id in smoke:
+        elif case_id in smoke and not smoke_retry_due(status, case_id):
             counts[smoke[case_id]["result"]["status"]] += 1
         else:
             counts["pending"] += 1

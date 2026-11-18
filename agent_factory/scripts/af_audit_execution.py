@@ -2,7 +2,7 @@
 import json
 from collections import defaultdict
 
-from agent_factory.af_audit_queue import audit_queue
+from agent_factory.af_audit_queue import audit_queue, smoke_retry_due
 
 
 def execution_packet(current, plan_path, recent, *, smoke=False):
@@ -19,7 +19,7 @@ def execution_packet(current, plan_path, recent, *, smoke=False):
         if batch["state"] not in ("pending", "retry"):
             continue
         for case_id in batch["case_ids"]:
-            if smoke and case_id in current.get("smoke", {}):
+            if smoke and case_id in current.get("smoke", {}) and not smoke_retry_due(current, case_id):
                 continue
             focus = batch.get("case_focus", {}).get(case_id, {})
             p = prepared[case_id]
@@ -36,7 +36,7 @@ def execution_packet(current, plan_path, recent, *, smoke=False):
     def case_priority(key, case_id, focus):
         remaining = focus.get("remaining")
         if smoke:
-            return (recent.count(case_id), not key[0].startswith("/"), ":" in key[0],
+            return (not smoke_retry_due(current, case_id), recent.count(case_id), not key[0].startswith("/"), ":" in key[0],
                     not bool(focus.get("verified_checks")), len(prepared[case_id]["steps"]))
         return (recent.count(case_id), not (remaining is not None and len(remaining) <= 1),
                 not key[0].startswith("/"), len(key[1]), not bool(focus.get("verified_checks")))
@@ -50,6 +50,8 @@ def execution_packet(current, plan_path, recent, *, smoke=False):
             "current": cases[case_id]["initial"],
             "checkpoint_focus": focus,
             "linked_verdicts": links[case_id],
+            **({"new_fixture": current["run_meta"]["smoke_retries"][case_id]}
+               if smoke_retry_due(current, case_id) else {}),
         } for case_id, focus in selected])
         if len(packets) == (6 if smoke else 2):
             break

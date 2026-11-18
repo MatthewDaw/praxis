@@ -264,31 +264,41 @@ class Audit:
     def record_smoke(self, entries: list[dict]) -> list[dict]:
         """Record lighter coverage independently of full-audit verdicts."""
         require(isinstance(entries, list) and bool(entries), "nonempty smoke batch required")
-        facts = {f["meta"]["audit_key"]: f["meta"] for f in self.facts()}
-        run = facts["run"]
+        facts = {f["meta"]["audit_key"]: f for f in self.facts()}
+        run = facts["run"]["meta"]
         require(run["phase"] == "audit", "smoke evidence requires an open initial audit")
         original = set(run.get("inventory_ids", []))
         results = {}
         for entry in entries:
             case_id, result = entry["case_id"], entry["result"]
             require(case_id in original and case_id not in results, "unexpected or duplicate original smoke case")
-            case = facts["case:" + case_id]
+            case = facts["case:" + case_id]["meta"]
             require(case["initial"]["status"] not in ("passed", "failed"), "reuse the full verdict")
             self.validate_result(result, run["initial_build"], run["target"], case["scenario"])
             serialized = json.dumps(result)
             require(redact_secrets(serialized) == serialized, "redact smoke evidence")
-            prior = facts.get("smoke:" + case_id)
-            require(prior is None or prior["result"] == result, "smoke result already recorded")
+            prior = facts.get("smoke:" + case_id, {}).get("meta")
+            retry = run.get("smoke_retries", {}).get(case_id)
+            can_retry = (prior and prior["result"]["status"] == "blocked"
+                         and nonempty(retry) and retry != prior.get("retry"))
+            require(prior is None or prior["result"] == result or can_retry, "smoke result already recorded")
             results[case_id] = result
         for case_id, result in results.items():
             key = "smoke:" + case_id
+            data = {"result": result, "recorded_at": datetime.now(timezone.utc).isoformat()}
+            retry = run.get("smoke_retries", {}).get(case_id)
             if key not in facts:
-                meta = {"audit_run": self.run, "audit_key": key, "case_id": case_id,
-                        "result": result, "recorded_at": datetime.now(timezone.utc).isoformat()}
+                meta = {"audit_run": self.run, "audit_key": key, "case_id": case_id, **data}
                 self.client._request("POST", "/insights", body={
                     "insight": f"Audit {self.project}/{self.run}: {key}", "category": CATEGORY,
                     "raw": True, "meta": meta,
                 }, **self.scope)
+            else:
+                prior = facts[key]["meta"]
+                if prior["result"]["status"] == "blocked" and retry and retry != prior.get("retry"):
+                    previous = {k: prior.get(k) for k in ("result", "recorded_at", "retry")}
+                    self.patch(facts[key], {**data, "retry": retry,
+                                           "prior_attempts": [*prior.get("prior_attempts", []), previous]})
         return [{"case_id": case_id, "status": result["status"]} for case_id, result in results.items()]
 
     def _record_change(self, case_id, fact, result, run):
