@@ -158,6 +158,10 @@ the supervisor can requeue that original alongside other work.
 Use the blocker prefix `Local browser interrupted:` for a browser crash or
 resource exhaustion in a disposable local run. The supervisor checks a fresh
 browser session before requeuing these cases. Continue from retained evidence.
+If the interruption recurs, a local smoke profile can supply
+`audit_browser_fallback`. Verify the affected UI on the alternate loopback
+origin with the same pinned source and disposable API. Record that origin and
+resume the remaining checks.
 
 Check whether the application can consume the requested fixture before
 creating it. Record demonstrated missing behavior as a product failure.

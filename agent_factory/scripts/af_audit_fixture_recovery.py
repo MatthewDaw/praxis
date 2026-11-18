@@ -23,6 +23,7 @@ BROWSER_HANDOFF = (
     "the specific local API request and remove the interception before testing recovery."
 )
 BROWSER_REVISION = "fresh-browser-v1"
+FALLBACK_BROWSER_REVISION = "fallback-browser-v1"
 
 
 def browser_interrupted(result):
@@ -82,10 +83,22 @@ def recover_fixtures(config, current, env, save, *, run=execute, now=time.time):
     browser_probe = config.get("audit_browser_probe") if local_recovery_enabled(config, current) else None
     if browser_probe:
         providers.insert(0, (":browser-preflight", {
-            "probe": browser_probe, "handoff": BROWSER_HANDOFF,
+            "probe": browser_probe, "handoff": BROWSER_HANDOFF, "browser_revision": BROWSER_REVISION,
         }))
+        fallback = config.get("audit_browser_fallback")
+        if fallback:
+            providers.insert(1, (":browser-fallback", {
+                "probe": fallback["probe"],
+                "handoff": (
+                    f"Alternate local frontend {fallback['origin']} passed browser preflight. "
+                    "Use that frontend with the same pinned source, audit API and owned fixtures. "
+                    "Record the alternate origin and resume only outstanding checks."
+                ),
+                "browser_revision": FALLBACK_BROWSER_REVISION,
+            }))
     for key, provider in providers:
-        browser = key == ":browser-preflight"
+        browser_revision = provider.get("browser_revision") if key in {":browser-preflight", ":browser-fallback"} else None
+        browser = browser_revision is not None
         prefixes = tuple(provider.get("blocker_prefixes", []))
         candidates = {}
         for case_id in inventory.intersection(provider.get("case_ids", inventory)):
@@ -98,9 +111,14 @@ def recover_fixtures(config, current, env, save, *, run=execute, now=time.time):
                 interrupted = browser_interrupted(result)
                 if browser != interrupted:
                     continue
-            if browser and any(BROWSER_REVISION in (entry.get("retry") or "")
-                               for entry in [record, *record.get("prior_attempts", [])]):
-                continue
+            if browser:
+                attempted = [entry.get("retry") or "" for entry in [record, *record.get("prior_attempts", [])]]
+                if any(browser_revision in retry for retry in attempted):
+                    continue
+                if browser_revision == FALLBACK_BROWSER_REVISION and not any(
+                    BROWSER_REVISION in retry for retry in attempted
+                ):
+                    continue
             if browser or not prefixes or blocker.startswith(prefixes):
                 candidates[case_id] = record
         if not candidates:
@@ -114,7 +132,7 @@ def recover_fixtures(config, current, env, save, *, run=execute, now=time.time):
         state["next_probe"] = clock + 300
         if browser:
             observation = run(provider["probe"], env, config["worktree"], 30)
-            revision = BROWSER_REVISION if observation.get("ok") else None
+            revision = browser_revision if observation.get("ok") else None
         else:
             revision = observe(provider["probe"], config, env, run)
         if revision is None and state.get("attempts", 0) < MAX_PROVISION_ATTEMPTS:

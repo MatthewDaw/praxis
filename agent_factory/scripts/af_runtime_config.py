@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+from urllib.parse import urlsplit
 
 
 GIB = 1024**3
@@ -74,6 +75,20 @@ def settings(values: dict) -> dict:
         probe = result.get('audit_browser_probe')
         if not isinstance(probe, list) or not probe or not all(isinstance(x, str) and x for x in probe) or not Path(probe[0]).is_absolute():
             raise ValueError('audit_browser_probe must be an argv array with an absolute executable')
+        fallback = result.get('audit_browser_fallback')
+        if fallback is not None:
+            if not local_recovery or not isinstance(fallback, dict):
+                raise ValueError('audit_browser_fallback requires local smoke recovery')
+            origin = fallback.get('origin')
+            command = fallback.get('probe')
+            if not isinstance(origin, str) or not re.fullmatch(
+                r'https?://(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?', origin
+            ) or urlsplit(origin).port == 0:
+                raise ValueError('audit_browser_fallback origin must be loopback')
+            if (not isinstance(command, list) or not command
+                    or not all(isinstance(x, str) and x for x in command)
+                    or not Path(command[0]).is_absolute()):
+                raise ValueError('audit_browser_fallback probe must be a trusted argv array')
         for key in ('audit_identity_probe', 'audit_identity_provisioner'):
             command = result.get(key)
             if command is not None and (not isinstance(command, list) or not command

@@ -249,6 +249,41 @@ def test_local_browser_interruption_retries_only_after_fresh_browser_probe(inter
     assert len(calls) == 2
 
 
+def test_recurrent_browser_interruption_can_use_verified_local_fallback():
+    from af_audit_fixture_recovery import BROWSER_REVISION, recover_fixtures
+
+    state = current()
+    state["run_meta"]["target"] = "http://127.0.0.1:15184"
+    record = {"result": {"status": "blocked", "blocker": "Local browser interrupted: module load failed"}}
+    state["smoke"] = {"AUTH": record}
+    config = {
+        "worktree": "/tmp",
+        "audit_smoke_local_recovery": True,
+        "audit_browser_probe": ["/browser-probe"],
+        "audit_browser_fallback": {"origin": "http://127.0.0.1:58803", "probe": ["/preview-probe"]},
+    }
+    calls = []
+
+    def run(argv, *_):
+        calls.append(argv)
+        return {"ok": argv == ["/browser-probe"] or len(calls) >= 3}
+
+    def save(changes):
+        state["run_meta"].update(copy.deepcopy(changes))
+
+    retries, waiting = recover_fixtures(config, state, {}, save, run=run, now=lambda: 1)
+    assert not waiting
+    assert BROWSER_REVISION in retries["AUTH"]
+    record["retry"] = retries["AUTH"]
+    assert recover_fixtures(config, state, {}, save, run=run, now=lambda: 2) == (retries, True)
+    retries, waiting = recover_fixtures(config, state, {}, save, run=run, now=lambda: 302)
+    assert not waiting
+    assert "http://127.0.0.1:58803" in retries["AUTH"]
+    record.update(retry=retries["AUTH"], prior_attempts=[{"retry": BROWSER_REVISION}])
+    assert recover_fixtures(config, state, {}, save, run=run, now=lambda: 602) == (retries, False)
+    assert calls == [["/browser-probe"], ["/preview-probe"], ["/preview-probe"]]
+
+
 def test_local_smoke_recovery_offers_one_attempt_alongside_pending_work():
     from af_audit_fixture_recovery import SELF_RECOVERY, offer_local_recovery
 

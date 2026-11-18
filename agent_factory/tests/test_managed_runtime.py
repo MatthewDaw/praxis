@@ -148,6 +148,17 @@ def test_audit_profile_refuses_ambiguous_phase_and_shell_probe(tmp_path):
         settings({**raw, 'audit_run': '../other-run'})
 
 
+def test_audit_profile_requires_verified_fallback_to_stay_local(tmp_path):
+    raw = {**audit_values(tmp_path), 'factory': '/factory', 'environment_file': '/private/env',
+           'audit_smoke_pass': True, 'audit_smoke_local_recovery': True}
+    fallback = {'origin': 'http://127.0.0.1:58803', 'probe': [sys.executable, '-c', 'pass']}
+    assert settings({**raw, 'audit_browser_fallback': fallback})['audit_browser_fallback'] == fallback
+    with pytest.raises(ValueError, match='must be loopback'):
+        settings({**raw, 'audit_browser_fallback': {**fallback, 'origin': 'https://dev.example.invalid'}})
+    with pytest.raises(ValueError, match='local smoke recovery'):
+        settings({**raw, 'audit_smoke_local_recovery': False, 'audit_browser_fallback': fallback})
+
+
 def test_audit_supervisor_does_not_treat_successful_process_as_coverage(tmp_path, monkeypatch):
     config = audit_values(tmp_path)
     config.update(factory='/factory', audit_no_progress_limit=2)

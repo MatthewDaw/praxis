@@ -152,6 +152,12 @@ local runtime interruption supported by Chromium resource-exhaustion evidence,
 the supervisor uses the configured browser preflight to verify that a fresh
 browser can load the app. A successful API health check alone cannot requeue
 this browser-specific interruption. The retry preserves completed checks.
+When a fresh-browser retry still hits the interruption, an optional
+`audit_browser_fallback` with a loopback `origin` and trusted `probe` argv can
+verify a bundled frontend. Serve the same pinned source through the same
+disposable API. The probe must render the affected UI on the alternate origin.
+A successful probe schedules one fallback retry and includes its origin in the
+worker assignment. The original audit target and evidence remain recorded.
 When no verified fixture retry is already queued, the handler queues one
 worker-led recovery alongside ordinary work. Each eligible blocker gets one
 such recovery attempt.
