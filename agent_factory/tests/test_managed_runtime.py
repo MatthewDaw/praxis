@@ -478,6 +478,24 @@ def test_smoke_assignments_remember_early_ids_after_a_large_batch(tmp_path, monk
     assert turns == 2
 
 
+def test_smoke_supervisor_waits_for_recoverable_fixture_and_reports_unresolved_blocker(tmp_path, monkeypatch):
+    config = audit_values(tmp_path)
+    config.update(factory='/factory', audit_smoke_pass=True)
+    snapshot = {
+        'phase': 'audit', 'smoke': {'AUTH': {'result': {'status': 'blocked'}}},
+        'run_meta': {'inventory_ids': ['AUTH'], 'initial_build': 'pinned', 'target': 'http://localhost:15184'},
+        'cases': [{'case_id': 'AUTH', 'initial': {'status': 'not_run'}}],
+    }
+    waits = []
+    monkeypatch.setattr(audit_supervisor, 'status', lambda *_: snapshot)
+    monkeypatch.setattr(audit_supervisor, 'prepare', lambda *_: ('prepared', True))
+    monkeypatch.setattr(audit_supervisor, 'plan_assignment', lambda *_: {'wait_for_smoke_fixture': not waits})
+    monkeypatch.setattr(audit_supervisor, 'run_turn', lambda *_: pytest.fail('no runnable case'))
+
+    assert audit_supervisor.supervise(config, {'PRAXIS_ORG': 'test-org'}, sleep=waits.append) == 78
+    assert waits == [30]
+
+
 def test_identity_wait_reprobes_and_then_runs_without_anonymous_turn(tmp_path, monkeypatch):
     config = audit_values(tmp_path)
     config.update(factory='/factory', audit_no_progress_limit=2)

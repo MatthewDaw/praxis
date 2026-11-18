@@ -136,8 +136,10 @@ When both selectors are set, a blocked case must match both. The supervisor prob
 returns `{"available": true, "revision": "opaque-fixture-revision"}`. The
 supervisor can provision against a missing fixture, reprobes, and requeues
 affected smoke cases once per verified fixture revision. Recoverable attempts
-are bounded and saved in Praxis. Unsupported dependencies remain visible
-as blocked. Provider commands come from the runtime profile.
+are bounded and saved in Praxis. The supervisor stays live through a retry
+cooldown when a provider still has an attempt available. If the queue has
+unresolved blockers after recovery is exhausted, it exits with status 78.
+Provider commands come from the runtime profile.
 
 Set `audit_smoke_local_recovery: true` for a loopback-only disposable run.
 When no verified fixture retry is already queued, the handler queues one

@@ -155,11 +155,12 @@ def test_smoke_fixture_recovery_reprobes_and_requeues_once():
     def save(changes):
         state["run_meta"].update(copy.deepcopy(changes))
 
-    retries = recover_fixtures(config, state, {}, save, run=run, now=lambda: 1)
+    retries, waiting = recover_fixtures(config, state, {}, save, run=run, now=lambda: 1)
+    assert not waiting
     assert calls == ["/probe", "/provision", "/probe"]
     assert "generation-1" in retries["AUTH"]
     state["smoke"]["AUTH"]["retry"] = retries["AUTH"]
-    assert recover_fixtures(config, state, {}, save, run=run, now=lambda: 400) == retries
+    assert recover_fixtures(config, state, {}, save, run=run, now=lambda: 400) == (retries, False)
     assert calls.count("/provision") == 1
 
 
@@ -179,7 +180,32 @@ def test_runtime_recovery_only_requeues_matching_blockers_in_scope():
     def observe(_, *_args):
         return {"ok": True, "output": {"available": True, "revision": "healthy-1"}}
 
-    assert set(recover_fixtures(cfg, state, {}, lambda _: None, run=observe)) == {"AUTH"}
+    retries, waiting = recover_fixtures(cfg, state, {}, lambda _: None, run=observe)
+    assert set(retries) == {"AUTH"}
+    assert not waiting
+
+
+def test_failed_fixture_provision_waits_only_until_attempts_are_exhausted():
+    from af_audit_fixture_recovery import recover_fixtures
+
+    state = current()
+    state["smoke"] = {"AUTH": {"result": {"status": "blocked"}}}
+    config = {"worktree": "/tmp", "audit_smoke_fixture_providers": {
+        "owned": {"case_ids": ["AUTH"], "probe": ["/probe"], "provision": ["/provision"],
+                  "handoff": "Use owned fixture."},
+    }}
+    calls = []
+
+    def run(argv, *_):
+        calls.append(argv[0])
+        return {"ok": False}
+
+    def save(changes):
+        state["run_meta"].update(copy.deepcopy(changes))
+
+    for clock, waiting in [(1, True), (100, True), (301, True), (601, False), (700, False)]:
+        assert recover_fixtures(config, state, {}, save, run=run, now=lambda: clock) == ({}, waiting)
+    assert calls == ["/probe", "/provision", "/probe"] * 3
 
 
 def test_local_smoke_recovery_offers_one_attempt_alongside_pending_work():

@@ -191,7 +191,7 @@ def main() -> int:
             from af_audit_fixture_recovery import offer_local_recovery, recover_fixtures
             def save(data):
                 ledger.patch(ledger.one('run'), data)
-            retries = recover_fixtures(config, current, dict(os.environ), save)
+            retries, plan['wait_for_smoke_fixture'] = recover_fixtures(config, current, dict(os.environ), save)
             plan['smoke_retries'] = offer_local_recovery(
                 config, current, retries, set(deferrals['identity']) | set(deferrals['external']), save,
             )

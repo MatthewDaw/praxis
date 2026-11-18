@@ -15,6 +15,7 @@ SELF_RECOVERY = (
     "remaining behavior before recording a verdict. If it stays blocked, record the exact "
     "prerequisite and the recovery you attempted."
 )
+MAX_PROVISION_ATTEMPTS = 3
 
 
 def offer_local_recovery(config, current, retries, deferred, save):
@@ -55,6 +56,7 @@ def recover_fixtures(config, current, env, save, *, run=execute, now=time.time):
     smoke = current.get("smoke", {})
     inventory = set(meta["inventory_ids"])
     already_done = {c["case_id"] for c in current["cases"] if c["initial"]["status"] in ("passed", "failed")}
+    waiting = False
     for key, provider in config.get("audit_smoke_fixture_providers", {}).items():
         prefixes = tuple(provider.get("blocker_prefixes", []))
         candidates = {}
@@ -71,10 +73,12 @@ def recover_fixtures(config, current, env, save, *, run=execute, now=time.time):
         state = dict(previous)
         clock = now()
         if clock < state.get("next_probe", 0):
+            waiting |= not state.get("revision") and state.get("attempts", 0) < MAX_PROVISION_ATTEMPTS
             continue
         state["next_probe"] = clock + 300
         revision = observe(provider["probe"], config, env, run)
-        if revision is None and state.get("attempts", 0) < 3:
+        if revision is None and state.get("attempts", 0) < MAX_PROVISION_ATTEMPTS:
+            state.pop("revision", None)
             state["attempts"] = state.get("attempts", 0) + 1
             states[key] = state
             # Persist the attempt before provision so restarts cannot loop on failures.
@@ -88,6 +92,9 @@ def recover_fixtures(config, current, env, save, *, run=execute, now=time.time):
                 if record.get("retry") != instruction and (case_id not in retries or
                         retries[case_id] == record.get("retry")):
                     retries[case_id] = instruction
+        else:
+            state.pop("revision", None)
+            waiting |= state.get("attempts", 0) < MAX_PROVISION_ATTEMPTS
         states[key] = state
     changes = {}
     if states != meta.get("smoke_fixture_recovery", {}):
@@ -96,7 +103,7 @@ def recover_fixtures(config, current, env, save, *, run=execute, now=time.time):
         changes["smoke_retries"] = retries
     if changes:
         save(changes)
-    return retries
+    return retries, waiting
 
 
 def observe(command, config, env, run):

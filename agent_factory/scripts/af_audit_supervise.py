@@ -160,6 +160,12 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                     before = {**before, "run_meta": {**before["run_meta"], "smoke_retries": plan["smoke_retries"]}}
                 progress = smoke_progress(before)
                 if (progress["total"] or config.get("audit_smoke_case_ids") is not None) and progress["pending"] == 0:
+                    if progress["blocked"]:
+                        if plan.get('wait_for_smoke_fixture') or plan.get('wait_for_identity'):
+                            sleep(30)
+                            continue
+                        print(json.dumps({"event": "audit_smoke_waiting_on_prerequisites", **progress}), flush=True)
+                        return 78
                     return 0
             assignment = directive(plan)
             if preparation and not plan['no_runnable_originals']:
@@ -200,9 +206,13 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                     + json.dumps({"target": before["run_meta"]["target"],
                                   "build": before["run_meta"]["initial_build"], "groups": packets})
                 )
-            elif smoke and not plan.get('wait_for_identity'):
-                print(json.dumps({"event": "audit_smoke_waiting_on_prerequisites", **smoke_progress(before)}), flush=True)
-                return 78
+            elif smoke:
+                if plan.get('wait_for_smoke_fixture'):
+                    sleep(30)
+                    continue
+                if not plan.get('wait_for_identity'):
+                    print(json.dumps({"event": "audit_smoke_waiting_on_prerequisites", **smoke_progress(before)}), flush=True)
+                    return 78
             if plan['no_runnable_originals'] and plan['deferred_identity_ids']:
                 notice = fingerprint(plan['dependency'])
                 if notice != identity_notice:
