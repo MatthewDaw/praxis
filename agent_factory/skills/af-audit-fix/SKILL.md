@@ -76,7 +76,10 @@ a product failure once, and record missing prerequisites as blocked. Leave
 extra device, history and equivalent-profile checks for the full audit.
 
 Submit smoke results with `record-smoke --input` using the same input shape as
-`record-batch`. See `queue` for counts. Smoke outcomes never populate full
+`record-batch`. Include both `console` and `network` arrays on every
+pass or failure. Use empty arrays only when the browser observations were
+checked and clean. Attach retained evidence with its URI and SHA-256.
+See `queue` for counts. Smoke outcomes never populate full
 verdicts or advance the audit phase. Completed full verdicts count as existing
 coverage in the smoke queue.
 
