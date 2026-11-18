@@ -36,6 +36,7 @@ export function interpretEvent(engine, event) {
   if (engine === 'claude') {
     if (event.type === 'result') return { result: event.result ?? '', failed: event.is_error === true || (event.subtype && event.subtype !== 'success') };
   } else {
+    if (event.type === 'error' && /^Reconnecting\.\.\. \d+\/\d+\b/.test(event.message ?? '')) return {};
     if (event.type === 'turn.failed' || event.type === 'error') return { failed: true };
     if (event.type === 'item.completed' && event.item?.type === 'agent_message') return { result: event.item.text ?? '' };
     if (event.type === 'turn.completed') return { completed: true };
@@ -78,7 +79,7 @@ export async function runAgent(options) {
   let failed = false, completed = false, finalText = '', pending = '', parseErrors = 0, timedOut = false;
   let startupTimer, startupTimedOut = false;
   const startupEvents = new Set(engine === 'codex'
-    ? ['item.started', 'item.completed', 'turn.completed', 'turn.failed', 'error']
+    ? ['item.started', 'item.completed', 'turn.completed', 'turn.failed']
     : ['assistant', 'user', 'result']);
   const child = spawn(launch.command, launch.args, { cwd: launch.cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
   const status = extra => writeFileSync(handles[3], JSON.stringify({ engine, startedAt, pid: child.pid ?? null, auditOutcome: 'not_determined_by_runner', ...extra }, null, 2));

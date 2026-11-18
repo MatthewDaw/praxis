@@ -28,6 +28,7 @@ test('explicit capabilities map to each CLI without a silent engine fallback', (
 test('semantic provider failures are not mistaken for successful process exits', () => {
   assert.equal(interpretEvent('claude', {type: 'result', subtype: 'error_max_turns', is_error: true}).failed, true);
   assert.equal(interpretEvent('codex', {type: 'turn.failed'}).failed, true);
+  assert.deepEqual(interpretEvent('codex', {type: 'error', message: 'Reconnecting... 2/5 (Selected model is at capacity)'}), {});
 });
 
 test('one-shot adapter records real stdin, exit, stream and refusal to overwrite', async () => {
@@ -59,7 +60,7 @@ test('one-shot adapter records real stdin, exit, stream and refusal to overwrite
     const stubborn=JSON.parse(readFileSync(path.join(root,'stubborn/process.json')));
     assert.equal(stubborn.timedOut,true);
     assert.equal(stubborn.signal,'SIGKILL');
-    writeFileSync(cliPath, '#!/usr/bin/env node\nconsole.log(JSON.stringify({type:"turn.started"}));setInterval(()=>{},1000);\n');
+    writeFileSync(cliPath, '#!/usr/bin/env node\nconsole.log(JSON.stringify({type:"turn.started"}));console.log(JSON.stringify({type:"error",message:"Reconnecting... 2/5 (Selected model is at capacity)"}));setInterval(()=>{},1000);\n');
     const startup = path.join(root, 'startup-stall');
     assert.equal(await runAgent({...options,outputDir:startup,startupTimeoutMs:500}), 1);
     const stalled = JSON.parse(readFileSync(path.join(startup, 'process.json')));
