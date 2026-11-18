@@ -124,6 +124,18 @@ def scoped_smoke_status(current, configured_ids):
     return {**current, "run_meta": {**meta, "inventory_ids": inventory_ids}}
 
 
+def smoke_checkpoints(current, original_ids):
+    checkpoints = set()
+    for sweep in current.get("sweeps", []):
+        scope = sweep["scope"]
+        checkpoints.update(
+            (check["caseId"], check["id"], check["route"], scope["role"], scope["sport"],
+             scope["viewport"], scope["fixtureState"])
+            for check in sweep["checks"] if check["verified"] and check["caseId"] in original_ids
+        )
+    return checkpoints
+
+
 def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
     no_progress = 0
     identity_notice = None
@@ -264,8 +276,21 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                   Path(config['audit_prompt_file']).read_text() + assignment)
         result = run_turn(config, env, prompt, phase)
         after = status(config, env)
-        if (before.get("smoke") == after.get("smoke") if smoke
-                else fingerprint(before) == fingerprint(after)):
+        if smoke:
+            original_ids = set(before.get("run_meta", {}).get("inventory_ids", []))
+            original_ids.difference_update(
+                case["case_id"] for case in before.get("cases", [])
+                if case["initial"]["status"] in ("passed", "failed")
+            )
+            original_ids.difference_update(
+                case_id for case_id, entry in before.get("smoke", {}).items()
+                if entry["result"]["status"] in ("passed", "failed")
+            )
+            unchanged = (before.get("smoke") == after.get("smoke") and not
+                         smoke_checkpoints(after, original_ids) - smoke_checkpoints(before, original_ids))
+        else:
+            unchanged = fingerprint(before) == fingerprint(after)
+        if unchanged:
             no_progress += 1
         else:
             no_progress = 0

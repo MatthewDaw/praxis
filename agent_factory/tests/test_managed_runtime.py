@@ -505,6 +505,39 @@ def test_smoke_batch_surfaces_one_repeatedly_deferred_case_after_fixture_retry(t
             if 'previous_assignments_without_verdict' in item] == [3]
 
 
+def test_smoke_supervisor_continues_after_new_verified_checkpoint_but_stops_on_duplicate(tmp_path, monkeypatch):
+    config = audit_values(tmp_path)
+    config.update(factory='/factory', audit_smoke_pass=True, audit_no_progress_limit=1)
+    snapshot = {
+        'phase': 'audit', 'smoke': {},
+        'run_meta': {'inventory_ids': ['MEDIA'], 'initial_build': 'pinned', 'target': 'http://localhost:15184'},
+        'cases': [{'case_id': 'MEDIA', 'initial': {'status': 'not_run'}}],
+        'sweeps': [],
+    }
+    checkpoint = {
+        'scope': {'role': 'coach', 'sport': 'basketball', 'viewport': 'desktop', 'fixtureState': 'owned media'},
+        'checks': [{'caseId': 'MEDIA', 'id': 'ready-playback', 'route': '/games', 'verified': True}],
+    }
+    monkeypatch.setattr(audit_supervisor, 'status', lambda *_: dict(snapshot))
+    monkeypatch.setattr(audit_supervisor, 'prepare', lambda *_: ('prepared', True))
+    monkeypatch.setattr(audit_supervisor, 'plan_assignment', lambda *_: {
+        'no_runnable_originals': False, 'deferred_identity_ids': [],
+    })
+    monkeypatch.setattr(audit_supervisor, 'execution_packet', lambda *_, **__: [[{'plan': {'id': 'MEDIA'}}]])
+    monkeypatch.setattr(audit_supervisor, 'browser_preflight', lambda *_: None)
+    attempts = []
+
+    def run_turn(*_):
+        attempts.append(len(attempts) + 1)
+        snapshot['sweeps'] = [*snapshot['sweeps'], {**checkpoint, 'artifact': attempts[-1]}]
+        return 0
+
+    monkeypatch.setattr(audit_supervisor, 'run_turn', run_turn)
+    assert audit_supervisor.supervise(config, {'PRAXIS_ORG': 'test-org'}) == 78
+    assert attempts == [1, 2]
+    assert snapshot['smoke'] == {}
+
+
 def test_smoke_supervisor_waits_for_recoverable_fixture_and_reports_unresolved_blocker(tmp_path, monkeypatch):
     config = audit_values(tmp_path)
     config.update(factory='/factory', audit_smoke_pass=True)

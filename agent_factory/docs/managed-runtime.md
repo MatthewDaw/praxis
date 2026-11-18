@@ -158,6 +158,8 @@ such recovery attempt.
 The supervisor also retains smoke assignment counts across restarts. A case
 assigned at least three times without a verdict gets a focused slot behind
 verified fixture retries. Other cases remain eligible in the same batch.
+New verified checkpoints for unfinished smoke cases count as progress.
+Recording the same assertion again in an unchanged visit scope does not.
 The prior blocker stays in the ledger, with the recovery outcome attached to
 the same original case. This does not apply to deployed targets, reserved
 assignments, or cases already deferred by a prerequisite handler.
