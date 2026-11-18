@@ -238,6 +238,8 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                     "Install console and request listeners before navigation when that coverage is requested. "
                     "For requested viewport coverage, verify the critical controls at both sizes while the fixture is open. "
                     "Record the actual page, role and viewport covered. Leave final verdicts to their assigned batch. "
+                    "For an assigned final check, use verified_final_checkpoints to skip the exact actions and "
+                    "profiles already tested. Each entry covers only its recorded route and scope. "
                     "Reuse scoped verified evidence when it covers the primary action. If a real product failure "
                     "appears, reproduce it once. Provision missing users and supported app records inside the "
                     "run-owned fixture organizations using the project instructions before declaring a blocker. "

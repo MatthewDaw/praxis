@@ -15,7 +15,7 @@ def execution_packet(current, plan_path, assignments, *, smoke=False, finalize_i
             links[parent].append(case)
 
     visits = defaultdict(list)
-    for batch in audit_queue(current)["batches"]:
+    for batch in audit_queue(current, final_check_ids=finalize_ids if smoke else ())["batches"]:
         if batch["state"] not in ("pending", "retry"):
             continue
         for case_id in batch["case_ids"]:

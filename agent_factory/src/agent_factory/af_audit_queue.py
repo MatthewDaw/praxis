@@ -43,7 +43,7 @@ def smoke_progress(status):
     return {"total": len(originals), **{k: counts[k] for k in ("passed", "failed", "blocked", "reused_full", "pending")}}
 
 
-def audit_queue(status, *, now=None):
+def audit_queue(status, *, now=None, final_check_ids=()):
     """Read-only view. The persisted original IDs remain the progress denominator."""
     meta = status["run_meta"]
     originals = meta.get("inventory_ids")
@@ -86,7 +86,7 @@ def audit_queue(status, *, now=None):
     for (state, route, roles, sport, viewport, fixture), ids in sorted(groups.items(), key=lambda pair: order[pair[0][0]]):
         batches.append(dict(state=state, route=route, roles=list(roles), sport=sport,
                             viewport=viewport, fixture_state=fixture, case_ids=ids))
-    metrics = sweep_queue(status, batches)
+    metrics = sweep_queue(status, batches, final_check_ids=final_check_ids)
     total = len(originals)
     completed = counts["passed"] + counts["failed"]
     progress = {k: counts[k] for k in ("passed", "failed", "assigned", "retry", "pending", "blocked")}
@@ -112,7 +112,7 @@ def audit_queue(status, *, now=None):
             "additional_cases": [c["case_id"] for c in status["cases"] if c["case_id"] not in set_originals]}
 
 
-def sweep_queue(status, visits):
+def sweep_queue(status, visits, *, final_check_ids=()):
     """Index recorded assertions by case and profile without inheriting verdicts."""
     by_case = {}
     remaining = {}
@@ -129,6 +129,7 @@ def sweep_queue(status, visits):
         for check in sweep["checks"]:
             key = (check["id"], check["route"], scope["role"], scope["sport"], scope["viewport"], scope["fixtureState"])
             by_case.setdefault(check["caseId"], {})[key] = (scope, check, sweep["artifact"]["sha256"])
+    final_check_ids = set(final_check_ids)
     for visit in visits:
         focus = {}
         for case_id in visit["case_ids"]:
@@ -140,6 +141,11 @@ def sweep_queue(status, visits):
                 if legacy.get("remaining_steps"):
                     details["prior_followup"] = legacy["remaining_steps"]
             for scope, check, sha in by_case.get(case_id, {}).values():
+                if case_id in final_check_ids and check["verified"]:
+                    details.setdefault("verified_final_checkpoints", []).append(dict(
+                        id=check["id"], action=check["action"], route=check["route"],
+                        tested_scope=scope, evidence=sha))
+                    continue
                 shared = check.get("equivalentRoles", [])
                 for role in visit["roles"]:
                     # Unspecified inventory scope requires the worker to compare

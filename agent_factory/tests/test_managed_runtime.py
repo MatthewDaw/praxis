@@ -537,10 +537,31 @@ def test_smoke_batch_surfaces_one_repeatedly_deferred_case_after_fixture_retry(t
     assert {item['plan']['id'] for group in groups for item in group} == {'new', 'stale-peer', 'later'}
     for case_id in ('new', 'stale-peer', 'later'):
         state['smoke'][case_id] = {'result': {'status': 'passed'}}
+    mobile_scope = {'role': 'coach', 'sport': 'basketball', 'viewport': '390px', 'fixtureState': 'owned game'}
+    state['sweeps'] = [{
+        'started': 1, 'recording_started': 2, 'scope': mobile_scope,
+        'routes': ['/coach/schedule'], 'remaining': {'stale': ['Verify desktop']},
+        'artifact': {'sha256': 'retained-checkpoint-hash'},
+        'checks': [
+            {'caseId': 'stale', 'id': 'coach-mobile', 'route': '/coach/schedule',
+             'action': 'Reach schedule controls', 'verified': True},
+            {'caseId': 'stale', 'id': 'unverified', 'route': '/coach/schedule',
+             'action': 'Inspect a dialog', 'verified': False},
+        ],
+    }]
     groups = audit_supervisor.execution_packet(
         state, plans, {'stale': 8}, smoke=True, finalize_ids=['stale'],
     )
     assert [item['plan']['id'] for group in groups for item in group] == ['stale']
+    assert groups[0][0]['checkpoint_focus'] == {
+        'remaining': ['Verify desktop'],
+        'verified_final_checkpoints': [{
+            'id': 'coach-mobile', 'action': 'Reach schedule controls', 'route': '/coach/schedule',
+            'tested_scope': mobile_scope, 'evidence': 'retained-checkpoint-hash',
+        }],
+    }
+    ordinary_groups = audit_supervisor.execution_packet(state, plans, {'stale': 8}, smoke=True)
+    assert ordinary_groups[0][0]['checkpoint_focus'] == {'remaining': ['Verify desktop']}
 
 
 def test_smoke_supervisor_continues_after_new_verified_checkpoint_but_stops_on_duplicate(tmp_path, monkeypatch):
