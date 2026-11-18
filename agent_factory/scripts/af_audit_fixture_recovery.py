@@ -25,6 +25,13 @@ BROWSER_HANDOFF = (
 BROWSER_REVISION = "fresh-browser-v1"
 
 
+def browser_interrupted(result):
+    if result.get("blocker", "").startswith(BROWSER_BLOCKERS):
+        return True
+    return any("ERR_INSUFFICIENT_RESOURCES" in str(observation)
+               for field in ("console", "network") for observation in (result.get(field) or []))
+
+
 def local_recovery_enabled(config, current):
     target = urlsplit(current["run_meta"].get("target", ""))
     return (config.get("audit_smoke_local_recovery", False)
@@ -50,7 +57,7 @@ def offer_local_recovery(config, current, retries, deferred, save):
         result = record.get("result", {})
         if result.get("status") != "blocked":
             continue
-        if config.get("audit_browser_probe") and result.get("blocker", "").startswith(BROWSER_BLOCKERS):
+        if config.get("audit_browser_probe") and browser_interrupted(result):
             continue
         attempted = [record, *record.get("prior_attempts", [])]
         if any(entry.get("retry") == SELF_RECOVERY for entry in attempted):
@@ -73,7 +80,7 @@ def recover_fixtures(config, current, env, save, *, run=execute, now=time.time):
     browser_probe = config.get("audit_browser_probe") if local_recovery_enabled(config, current) else None
     if browser_probe:
         providers.insert(0, (":browser-preflight", {
-            "probe": browser_probe, "blocker_prefixes": BROWSER_BLOCKERS, "handoff": BROWSER_HANDOFF,
+            "probe": browser_probe, "handoff": BROWSER_HANDOFF,
         }))
     for key, provider in providers:
         browser = key == ":browser-preflight"
@@ -85,12 +92,14 @@ def recover_fixtures(config, current, env, save, *, run=execute, now=time.time):
             if case_id in already_done or result.get("status") != "blocked":
                 continue
             blocker = result.get("blocker", "")
-            if browser_probe and not browser and blocker.startswith(BROWSER_BLOCKERS):
-                continue
+            if browser_probe:
+                interrupted = browser_interrupted(result)
+                if browser != interrupted:
+                    continue
             if browser and any(BROWSER_REVISION in (entry.get("retry") or "")
                                for entry in [record, *record.get("prior_attempts", [])]):
                 continue
-            if not prefixes or blocker.startswith(prefixes):
+            if browser or not prefixes or blocker.startswith(prefixes):
                 candidates[case_id] = record
         if not candidates:
             continue

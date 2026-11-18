@@ -164,6 +164,9 @@ creating it. Record demonstrated missing behavior as a product failure.
 If the scenario allows a scoped redirect or unavailable state, directly
 exercise that branch with an owned entity and verify the settled destination
 or visible state. Record which branch was verified.
+When the scenario makes an action conditional on the controls that are
+present, record whether the action exists and continue its independent checks,
+including any required role comparison.
 Keep setup probes as prerequisite evidence and use observed application
 behavior for the scenario verdict. Retain any remaining blocker and the
 specific recovery already attempted.

@@ -208,12 +208,17 @@ def test_failed_fixture_provision_waits_only_until_attempts_are_exhausted():
     assert calls == ["/probe", "/provision", "/probe"] * 3
 
 
-def test_local_browser_interruption_retries_only_after_fresh_browser_probe():
+@pytest.mark.parametrize("interruption", [
+    {"blocker": "Local runtime interrupted: Chromium crashed"},
+    {"blocker": "Local runtime interrupted: scheduling route failed to mount",
+     "network": [{"errorText": "net::ERR_INSUFFICIENT_RESOURCES"}]},
+])
+def test_local_browser_interruption_retries_only_after_fresh_browser_probe(interruption):
     from af_audit_fixture_recovery import offer_local_recovery, recover_fixtures
 
     state = current()
     state["run_meta"]["target"] = "http://127.0.0.1:15184"
-    state["smoke"] = {"AUTH": {"result": {"status": "blocked", "blocker": "Local runtime interrupted: Chromium crashed"}}}
+    state["smoke"] = {"AUTH": {"result": {"status": "blocked", **interruption}}}
     config = {
         "worktree": "/tmp", "audit_smoke_local_recovery": True, "audit_browser_probe": ["/browser-probe"],
         "audit_smoke_fixture_providers": {
