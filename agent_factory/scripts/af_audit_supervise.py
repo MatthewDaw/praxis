@@ -128,7 +128,7 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
     smoke = config.get("audit_smoke_pass", False)
     recent = deque(maxlen=24)
     while True:
-        before = status(config, env)
+        canonical = before = status(config, env)
         phase = before['phase']
         if smoke and phase == 'audit':
             before = scoped_smoke_status(before, config.get("audit_smoke_case_ids"))
@@ -149,7 +149,7 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
         assignment = ''
         packets = []
         if phase == 'audit':
-            preparation, ready = prepare(config, env, before, run_turn)
+            preparation, ready = prepare(config, env, canonical, run_turn)
             if not ready:
                 print(json.dumps({'event': 'audit_preparation_requires_attention',
                                   'reason': 'repeated turns did not produce valid plans'}), flush=True)
