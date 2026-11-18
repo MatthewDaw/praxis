@@ -98,6 +98,11 @@ viewport and fixture state. In one browser context, inspect the page once and
 exercise the pending behaviors that share those prerequisites. Save distinct
 verdicts and evidence references for each case. Revisit for a named requirement
 such as reload persistence, a different permission, or a failure reproduction.
+When the inventory requests a cross-site console or responsive check, collect
+its evidence during the ordinary visits. Attach listeners before navigation.
+Check requested viewport sizes while the page and fixture are open, and retain
+the exact role, route and viewport. The final review should reconcile this
+evidence and visit only the remaining gaps.
 For routine controls, open the page in a prepared profile, enumerate visible
 actions once, click each applicable control and observe its specific effect
 (dialog, navigation, filter, validation or saved state). Exercise controls

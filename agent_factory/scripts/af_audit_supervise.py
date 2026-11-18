@@ -219,6 +219,12 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                                       "build": before["run_meta"]["initial_build"], "groups": packets})
                     )
             if smoke and packets:
+                final_checks = {
+                    case["case_id"]: case.get("scenario", {}).get("expected", "")
+                    for case in before["cases"]
+                    if case["case_id"] in config.get("audit_smoke_finalize_ids", ())
+                    and case["case_id"] not in before.get("smoke", {})
+                }
                 assignment = (
                     "\nExecute only this functional smoke batch. Open the assigned routes in prepared profiles. "
                     "Handle queued fixture retries first, then the case marked previous_assignments_without_verdict. "
@@ -227,7 +233,11 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                     "Save any newly verified checkpoints. "
                     "Assert one primary action and outcome per scenario. Use one representative role unless "
                     "the capability differs by role. Verify save persistence for write workflows and direct role "
-                    "differences when permissions are central. Omit extra viewport, history and repeat checks. "
+                    "differences when permissions are central. Omit unrequested viewport, history and repeat checks. "
+                    "Gather applicable evidence for configured final checks during the current visit. "
+                    "Install console and request listeners before navigation when that coverage is requested. "
+                    "For requested viewport coverage, verify the critical controls at both sizes while the fixture is open. "
+                    "Record the actual page, role and viewport covered. Leave final verdicts to their assigned batch. "
                     "Reuse scoped verified evidence when it covers the primary action. If a real product failure "
                     "appears, reproduce it once. Provision missing users and supported app records inside the "
                     "run-owned fixture organizations using the project instructions before declaring a blocker. "
@@ -242,7 +252,8 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                     "evidence. These records are smoke scope only. Return right after recording. "
                     "The attached snapshot replaces a full ledger read. Never write a full verdict or advance an audit phase.\n"
                     + json.dumps({"target": before["run_meta"]["target"],
-                                  "build": before["run_meta"]["initial_build"], "groups": packets})
+                                  "build": before["run_meta"]["initial_build"], "groups": packets,
+                                  "final_checks": final_checks})
                 )
             elif smoke:
                 if plan.get('wait_for_smoke_fixture'):

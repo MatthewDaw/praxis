@@ -458,11 +458,13 @@ def test_smoke_assignments_remember_early_ids_after_a_large_batch(tmp_path, monk
     config = audit_values(tmp_path)
     config.update(factory='/factory', audit_smoke_pass=True, audit_no_progress_limit=3)
     ids = [f'case-{i}' for i in range(27)]
+    config['audit_smoke_finalize_ids'] = [ids[-1]]
     pending = {
         'phase': 'audit', 'smoke': {},
         'run_meta': {'inventory_ids': ids, 'initial_build': 'pinned', 'target': 'http://localhost:15184'},
         'cases': [{'case_id': item, 'initial': {'status': 'not_run'}} for item in ids],
     }
+    pending['cases'][-1]['scenario'] = {'expected': 'Check responsive controls at desktop and mobile'}
     recorded = Path(config['runtime']) / 'state' / 'audit-assignments-test-run.json'
     recorded.parent.mkdir(parents=True, exist_ok=True)
     recorded.write_text(json.dumps({ids[0]: 2}))
@@ -483,8 +485,9 @@ def test_smoke_assignments_remember_early_ids_after_a_large_batch(tmp_path, monk
         assert counts.get(ids[-1]) == 1
         return [[{'plan': {'id': ids[0]}}]]
 
-    def run_turn(*_):
+    def run_turn(_config, _env, prompt, _phase):
         nonlocal turns
+        assert f'"final_checks": {{"{ids[-1]}": "Check responsive controls at desktop and mobile"}}' in prompt
         turns += 1
         if turns == 2:
             snapshot['phase'] = 'complete'
