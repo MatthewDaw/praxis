@@ -154,6 +154,9 @@ the supervisor can requeue that original alongside other work.
 
 Check whether the application can consume the requested fixture before
 creating it. Record demonstrated missing behavior as a product failure.
+If the scenario allows a scoped redirect or unavailable state, directly
+exercise that branch with an owned entity and verify the settled destination
+or visible state. Record which branch was verified.
 Keep setup probes as prerequisite evidence and use observed application
 behavior for the scenario verdict. Retain any remaining blocker and the
 specific recovery already attempted.
