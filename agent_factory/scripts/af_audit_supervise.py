@@ -230,6 +230,8 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                     "Reuse scoped verified evidence when it covers the primary action. If a real product failure "
                     "appears, reproduce it once. Provision missing users and supported app records inside the "
                     "run-owned fixture organizations using the project instructions before declaring a blocker. "
+                    "When an expected actor or record is absent from a picker, verify its required category, "
+                    "scope, and lifecycle state. Repair an ineligible fixture and retry before assigning a product verdict. "
                     "Record ownership and cleanup references. When provisioning cannot supply the fixture, "
                     "record the concrete missing prerequisite as blocked. "
                     "Keep moving when one case is blocked. Use a single script for compatible work and one "

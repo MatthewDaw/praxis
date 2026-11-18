@@ -175,6 +175,14 @@ Keep setup probes as prerequisite evidence and use observed application
 behavior for the scenario verdict. Retain any remaining blocker and the
 specific recovery already attempted.
 
+When a picker omits an expected actor or record, check that fixture's eligibility
+using the application's supported lookup or setup workflow. Verify the
+organization category, assignment scope, and any required lifecycle state that
+the picker uses. Sign-in alone establishes identity. If the fixture is
+ineligible, repair it or provision a separate eligible fixture, then retry the
+original action. Record the exact missing prerequisite as blocked if supported
+local setup cannot supply it.
+
 At every batch boundary, inspect current private fixture handoffs and prerequisite
 observations before selecting work. Group a shared missing prerequisite once in
 Praxis, with its affected original IDs and the exact evidence needed to unblock
