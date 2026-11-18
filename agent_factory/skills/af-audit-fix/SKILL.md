@@ -68,6 +68,14 @@ For unmanaged runs, use the same preparation and reuse steps before execution.
 
 ## Use each page visit for a batch
 
+When the managed supervisor attaches execution packets, use their scenario
+plans, scoped checkpoints and linked verdicts as your ledger read. Execute
+compatible checks together and close each original whose contract has a
+verdict. Put verified outcomes in one `record-batch --input` call using an
+array of objects with `case_id` and the normal `result` fields. A partial
+check remains sweep evidence. Move on when a fixture is missing and record
+the concrete dependency. Return immediately after recording the batch.
+
 Start with pending original inventory IDs. Group cases by route, role, sport,
 viewport and fixture state. In one browser context, inspect the page once and
 exercise the pending behaviors that share those prerequisites. Save distinct

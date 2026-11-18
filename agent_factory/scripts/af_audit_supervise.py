@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import deque
 from pathlib import Path
 import subprocess
 import tempfile
 import time
 import uuid
 
+from af_audit_execution import execution_packet
 from af_audit_prepare import prepare
 from af_audit_prerequisites import identity_plan, directive
 
@@ -110,6 +112,7 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
     no_progress = 0
     identity_notice = None
     browser_ready = False
+    recent = deque(maxlen=24)
     while True:
         before = status(config, env)
         phase = before['phase']
@@ -125,6 +128,7 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
         if phase not in config['audit_phases']:
             raise ValueError('canonical phase is outside this coordinator assignment')
         assignment = ''
+        packets = []
         if phase == 'audit':
             preparation, ready = prepare(config, env, before, run_turn)
             if not ready:
@@ -133,10 +137,26 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                 return 78
             plan = plan_assignment(config, before, env)
             assignment = directive(plan)
-            if preparation:
-                assignment += (f"\nRead prepared plans in {preparation} for assigned case IDs only. "
-                               "Use current ledger checkpoints and verdicts to skip completed work. "
-                               "Execute the remaining checks from the plans and record case verdicts.\n")
+            if preparation and not plan['no_runnable_originals']:
+                queue_state = {**before, "run_meta": {**before["run_meta"], "queue_deferrals": {
+                    "identity": plan.get("deferred_identity_ids", []), "external": plan.get("deferred_external_ids", []),
+                }}}
+                packets = execution_packet(queue_state, preparation, recent)
+                if packets:
+                    recent.extend(item["plan"]["id"] for group in packets for item in group)
+                    assignment = (
+                        "\nUse these scoped execution packets. The supervisor has already read Praxis "
+                        "for the assigned cases. Use the attached inventory and verified evidence. "
+                        "Write one runnable Playwright script for the selected compatible groups. "
+                        "Finish each scenario while its fixture and role are open. "
+                        "Use one record-batch call for explicit verdicts with evidence. "
+                        "When a required fixture is missing, record its exact dependency and continue "
+                        "the other cases. Keep the unresolved part separate from verified evidence. "
+                        "Do not repeat successful checks or reread the full ledger. "
+                        "End the turn immediately after recording the results.\n"
+                        + json.dumps({"target": before["run_meta"].get("target"),
+                                      "build": before["run_meta"]["initial_build"], "groups": packets})
+                    )
             if plan['no_runnable_originals'] and plan['deferred_identity_ids']:
                 notice = fingerprint(plan['dependency'])
                 if notice != identity_notice:
@@ -156,7 +176,8 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
         prompt = (f'Execute a bounded batch through the af-audit-fix skill at {skill}.\n'
                   f'Canonical scope: org={env["PRAXIS_ORG"]}, project={config["project"]}, '
                   f'run={config["audit_run"]}, assigned current phase={phase}.\n'
-                  'Read canonical Praxis status first. Never work outside this assigned phase. '
+                  + ('Use the current attached Praxis snapshot. ' if packets else 'Read canonical Praxis status first. ')
+                  + 'Never work outside this assigned phase. '
                   'A source census, test count or process success is not a browser pass. '
                   'Read the run target and pinned revision from Praxis. Preserve evidence, '
                   'record actual case outcomes in Praxis, and reconcile discovered controls. '

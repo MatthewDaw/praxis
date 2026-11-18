@@ -484,7 +484,8 @@ def test_audit_prepares_remaining_cases_before_browser_and_resumes_saved_plans(t
             assert [c['case_id'] for c in json.loads(request.read_text())['cases']] == ['pending']
             request.with_name('plans.json').write_text(json.dumps([dict(id='pending', **original)]))
         else:
-            assert str(path) in prompt
+            assert "scoped execution packets" in prompt
+            assert "record-batch" in prompt
             assert {p['id'] for p in json.loads(path.read_text())['plans']} == {'saved', 'pending'}
             state['phase'] = 'complete'
         return 0

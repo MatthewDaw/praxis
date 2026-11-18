@@ -232,12 +232,37 @@ class Audit:
         require(nonempty(result.get("cleanup")), "cleanup ledger reference or explicit no mutations required")
 
     def record(self, case_id: str, result: dict, *, receipt: bool = False) -> dict:
-        run = self.one("run")["meta"]
+        results = self.record_batch([{"case_id": case_id, "result": result}])
+        return results[0] if receipt else self.status()
+
+    def record_batch(self, entries: list[dict]) -> list[dict]:
+        require(isinstance(entries, list) and bool(entries), "nonempty verdict batch required")
+        facts = self.facts()
+        runs = [f["meta"] for f in facts if f["meta"]["audit_key"] == "run"]
+        require(len(runs) == 1, "expected one audit run")
+        run = runs[0]
+        require(run["phase"] in {"audit", "reaudit"}, "case evidence only writable during audit or reaudit")
+        cases = {}
+        for fact in facts:
+            key = fact["meta"]["audit_key"]
+            if key.startswith(("case:", "neighbor:")):
+                cases.setdefault(key.split(":", 1)[1], []).append(fact)
+        validated = []
+        seen = set()
+        for entry in entries:
+            case_id, result = entry["case_id"], entry["result"]
+            matches = cases.get(case_id, [])
+            require(len(matches) == 1 and case_id not in seen, "case missing or duplicate in verdict batch")
+            seen.add(case_id)
+            fact = matches[0]
+            validated.append((fact, *self._record_change(case_id, fact, result, run)))
+        for fact, _, changes in validated:
+            if changes:
+                self.patch(fact, changes)
+        return [receipt for _, receipt, _ in validated]
+
+    def _record_change(self, case_id, fact, result, run):
         phase = run["phase"]
-        require(phase in {"audit", "reaudit"}, "case evidence only writable during audit or reaudit")
-        matches = [f for f in self.facts() if f["meta"].get("audit_key") in {"case:" + case_id, "neighbor:" + case_id}]
-        require(len(matches) == 1, "case not found or ambiguous")
-        fact = matches[0]
         slot = "initial" if phase == "audit" else "reaudit"
         if phase == "reaudit":
             require(case_id in run["failed_ids"] or fact["meta"]["audit_key"].startswith("neighbor:"),
@@ -249,7 +274,7 @@ class Audit:
                 "recorded result is immutable; use a new run for another execution")
         acknowledgment = {"case_id": case_id, "phase": phase, "status": result["status"], "build": result["build"]}
         if old == result:
-            return acknowledgment if receipt else self.status()
+            return acknowledgment, None
         if slot == "reaudit" and old.get("build") == result["build"] and old.get("status") in {"passed", "failed"}:
             require(nonempty(result.get("rerun_reason")), "same-build re-audit requires rerun_reason")
         # Credentials must remain in private fixture bundles, never the evidence ledger.
@@ -257,8 +282,7 @@ class Audit:
         changes = {slot: copy.deepcopy(result), slot + "_recorded_at": datetime.now(timezone.utc).isoformat()}
         if slot == "reaudit":
             changes["reaudit_attempts"] = fact["meta"].get("reaudit_attempts", []) + [copy.deepcopy(result)]
-        self.patch(fact, changes)
-        return acknowledgment if receipt else self.status()
+        return acknowledgment, changes
 
     def record_sweep(self, path: Path) -> dict:
         """Attach the browser's action evidence in one write. Verdicts remain explicit."""
@@ -491,6 +515,7 @@ def main(argv: list[str] | None = None) -> int:
     record.add_argument("--receipt", action="store_true", help="return only the accepted case verdict")
     record.add_argument("--case", required=True)
     record.add_argument("--input", required=True)
+    sub.add_parser("record-batch").add_argument("--input", required=True)
     sub.add_parser("record-sweep").add_argument("--input", required=True)
     advance = sub.add_parser("advance")
     advance.add_argument("--input", required=True)
@@ -512,6 +537,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "check":
             checks = audit.check_many(args.case)
             output = checks[0] if len(checks) == 1 else checks
+        elif args.command == "record-batch":
+            output = audit.record_batch(data)
         elif args.command == "record-sweep":
             output = audit.record_sweep(Path(args.input))
         elif args.command == "record":

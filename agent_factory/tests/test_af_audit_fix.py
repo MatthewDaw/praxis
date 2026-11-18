@@ -334,3 +334,14 @@ def test_sweep_replay_scope_and_close_first(audit, tmp_path):
     assert first["close_first"] == ["A"]
     assert [x["role"] for x in first["case_focus"]["A"]["verified_checks"]] == ["coach"]
     assert q["progress"]["completed"] == 0
+
+
+def test_record_batch_validates_all_verdicts_before_writing(audit):
+    a = {"case_id": "A", "result": evidence()}
+    b = {"case_id": "B", "result": evidence(build="wrong-build")}
+    with pytest.raises(ValueError, match="drift"):
+        audit.record_batch([a, b])
+    assert audit.status()["counts"]["not_run"] == 2
+    b["result"]["build"] = "sha1"
+    assert audit.record_batch([a, b]) == audit.record_batch([a, b])
+    assert audit.status()["counts"]["passed"] == 2
