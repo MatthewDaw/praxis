@@ -161,3 +161,22 @@ def test_smoke_fixture_recovery_reprobes_and_requeues_once():
     state["smoke"]["AUTH"]["retry"] = retries["AUTH"]
     assert recover_fixtures(config, state, {}, save, run=run, now=lambda: 400) == retries
     assert calls.count("/provision") == 1
+
+
+def test_runtime_recovery_only_requeues_matching_blockers_in_scope():
+    from af_audit_fixture_recovery import recover_fixtures
+
+    state = current()
+    state["smoke"] = {
+        "AUTH": {"result": {"status": "blocked", "blocker": "Local API interrupted"}},
+        "TEAMS": {"result": {"status": "blocked", "blocker": "Missing team"}},
+        "OUTSIDE": {"result": {"status": "blocked", "blocker": "Local API interrupted"}},
+    }
+    cfg = {"worktree": "/tmp", "audit_smoke_fixture_providers": {
+        "runtime": {"blocker_prefixes": ["Local API interrupted"], "probe": ["/probe"],
+                    "provision": ["/provision"], "handoff": "API healthy."},
+    }}
+    def observe(_, *_args):
+        return {"ok": True, "output": {"available": True, "revision": "healthy-1"}}
+
+    assert set(recover_fixtures(cfg, state, {}, lambda _: None, run=observe)) == {"AUTH"}

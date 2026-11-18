@@ -81,10 +81,15 @@ def settings(values: dict) -> dict:
         if not isinstance(providers, dict):
             raise ValueError('audit_smoke_fixture_providers must be an object')
         for provider in providers.values():
-            if (not isinstance(provider, dict) or not isinstance(provider.get('case_ids'), list)
-                    or not provider['case_ids'] or not all(isinstance(i, str) and i for i in provider['case_ids'])
-                    or not isinstance(provider.get('handoff'), str) or not provider['handoff'].strip()):
-                raise ValueError('fixture provider requires case_ids and a handoff description')
+            if (not isinstance(provider, dict) or not isinstance(provider.get('handoff'), str)
+                    or not provider['handoff'].strip()):
+                raise ValueError('fixture provider requires a handoff description')
+            for field in ('case_ids', 'blocker_prefixes'):
+                items = provider.get(field, [])
+                if not isinstance(items, list) or any(not isinstance(i, str) or not i.strip() for i in items):
+                    raise ValueError(f'fixture provider {field} must be a list of nonempty strings')
+            if not provider.get('case_ids') and not provider.get('blocker_prefixes'):
+                raise ValueError('fixture provider requires case IDs or exact blocker prefixes')
             for field in ('probe', 'provision'):
                 command = provider.get(field)
                 if (not isinstance(command, list) or not command or not all(isinstance(x, str) and x for x in command)

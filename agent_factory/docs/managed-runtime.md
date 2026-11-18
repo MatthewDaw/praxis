@@ -126,12 +126,13 @@ available in the original ledger.
 ## Smoke fixture recovery
 
 A smoke audit can configure `audit_smoke_fixture_providers` as an object keyed
-by fixture type. Each entry supplies `case_ids`, a private handoff description,
+by fixture type. Each entry supplies `case_ids` or exact `blocker_prefixes`,
+a private handoff description,
 and operator-authored `probe` and `provision` argv arrays with absolute
 executables. Use run-owned disposable organizations and fixture identities for
 writes. Store new resource ownership and cleanup references with the audit run.
 
-The supervisor probes only providers with blocked cases. A successful probe
+When both selectors are set, a blocked case must match both. The supervisor probes only providers with matching blocked cases in its assigned inventory. A successful probe
 returns `{"available": true, "revision": "opaque-fixture-revision"}`. The
 supervisor can provision against a missing fixture, reprobes, and requeues
 affected smoke cases once per verified fixture revision. Recoverable attempts

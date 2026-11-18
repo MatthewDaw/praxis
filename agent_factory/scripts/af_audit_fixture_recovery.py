@@ -12,12 +12,18 @@ def recover_fixtures(config, current, env, save, *, run=execute, now=time.time):
     states = dict(meta.get("smoke_fixture_recovery", {}))
     retries = dict(meta.get("smoke_retries", {}))
     smoke = current.get("smoke", {})
+    inventory = set(meta["inventory_ids"])
     already_done = {c["case_id"] for c in current["cases"] if c["initial"]["status"] in ("passed", "failed")}
     for key, provider in config.get("audit_smoke_fixture_providers", {}).items():
-        candidates = {
-            case_id: smoke[case_id] for case_id in provider["case_ids"]
-            if case_id not in already_done and smoke.get(case_id, {}).get("result", {}).get("status") == "blocked"
-        }
+        prefixes = tuple(provider.get("blocker_prefixes", []))
+        candidates = {}
+        for case_id in inventory.intersection(provider.get("case_ids", inventory)):
+            record = smoke.get(case_id, {})
+            result = record.get("result", {})
+            if case_id in already_done or result.get("status") != "blocked":
+                continue
+            if not prefixes or result.get("blocker", "").startswith(prefixes):
+                candidates[case_id] = record
         if not candidates:
             continue
         previous = states.get(key, {})
