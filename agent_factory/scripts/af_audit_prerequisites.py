@@ -184,6 +184,10 @@ def main() -> int:
         from agent_factory.af_audit_queue import audit_queue, next_visits
         current = payload['current']
         meta = current['run_meta']
+        if config.get('audit_smoke_pass') and config.get('audit_smoke_fixture_providers'):
+            from af_audit_fixture_recovery import recover_fixtures
+            plan['smoke_retries'] = recover_fixtures(config, current, dict(os.environ),
+                                                     lambda data: ledger.patch(ledger.one('run'), data))
         deferrals = {'identity': plan['deferred_identity_ids'], 'external': plan['deferred_external_ids']}
         if deferrals != meta.get('queue_deferrals'):
             ledger.patch(ledger.one('run'), {'queue_deferrals': deferrals})

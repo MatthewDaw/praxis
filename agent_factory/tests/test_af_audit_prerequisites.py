@@ -132,3 +132,32 @@ def test_provider_backoff_keeps_probe_waiting_instead_of_stranding_retry():
                           'audit_identity_provisioner': ['/provide']}, state, {}, lambda _: None, run=probe, now=lambda: 100)
     assert plan['wait_for_identity']
     assert calls == ['/probe']
+
+
+def test_smoke_fixture_recovery_reprobes_and_requeues_once():
+    from af_audit_fixture_recovery import recover_fixtures
+
+    state = current()
+    state["smoke"] = {"AUTH": {"result": {"status": "blocked"}}}
+    config = {"worktree": "/tmp", "audit_smoke_fixture_providers": {
+        "owned": {"case_ids": ["AUTH"], "probe": ["/probe"], "provision": ["/provision"], "handoff": "Use owned fixture."},
+    }}
+    calls = []
+    ready = False
+
+    def run(argv, *_):
+        nonlocal ready
+        calls.append(argv[0])
+        if argv == ["/provision"]:
+            ready = True
+        return {"ok": True, "output": {"available": ready, "revision": "generation-1"}}
+
+    def save(changes):
+        state["run_meta"].update(copy.deepcopy(changes))
+
+    retries = recover_fixtures(config, state, {}, save, run=run, now=lambda: 1)
+    assert calls == ["/probe", "/provision", "/probe"]
+    assert "generation-1" in retries["AUTH"]
+    state["smoke"]["AUTH"]["retry"] = retries["AUTH"]
+    assert recover_fixtures(config, state, {}, save, run=run, now=lambda: 400) == retries
+    assert calls.count("/provision") == 1

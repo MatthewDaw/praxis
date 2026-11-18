@@ -123,8 +123,6 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
         if smoke and phase == 'audit':
             progress = smoke_progress(before)
             print(json.dumps({"event": "audit_smoke_progress", **progress}), flush=True)
-            if progress["total"] and progress["pending"] == 0:
-                return 0
         if phase in TERMINAL:
             # partial remains plainly partial; service success only means it stopped
             # correctly, never that every case passed.
@@ -143,6 +141,12 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                                   'reason': 'repeated turns did not produce valid plans'}), flush=True)
                 return 78
             plan = plan_assignment(config, before, env)
+            if smoke:
+                if "smoke_retries" in plan:
+                    before = {**before, "run_meta": {**before["run_meta"], "smoke_retries": plan["smoke_retries"]}}
+                progress = smoke_progress(before)
+                if progress["total"] and progress["pending"] == 0:
+                    return 0
             assignment = directive(plan)
             if preparation and not plan['no_runnable_originals']:
                 queue_state = {**before, "run_meta": {**before["run_meta"], "queue_deferrals": {
@@ -171,7 +175,10 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                     "the capability differs by role. Verify save persistence for write workflows and direct role "
                     "differences when permissions are central. Omit extra viewport, history and repeat checks. "
                     "Reuse scoped verified evidence when it covers the primary action. If a real product failure "
-                    "appears, reproduce it once. A missing fixture is blocked, with the concrete missing prerequisite. "
+                    "appears, reproduce it once. Provision missing users and supported app records inside the "
+                    "run-owned fixture organizations using the project instructions before declaring a blocker. "
+                    "Record ownership and cleanup references. When provisioning cannot supply the fixture, "
+                    "record the concrete missing prerequisite as blocked. "
                     "Keep moving when one case is blocked. Use a single script for compatible work and one "
                     "record-smoke --input call for the outcome array with case_id and result. Reference actual retained "
                     "evidence. These records are smoke scope only. Return right after recording. "

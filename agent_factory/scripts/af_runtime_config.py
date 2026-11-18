@@ -73,6 +73,19 @@ def settings(values: dict) -> dict:
                     or not all(isinstance(x, str) and x for x in command)
                     or not Path(command[0]).is_absolute()):
                 raise ValueError(f'{key} must be an argv array with an absolute executable')
+        providers = result.get('audit_smoke_fixture_providers', {})
+        if not isinstance(providers, dict):
+            raise ValueError('audit_smoke_fixture_providers must be an object')
+        for provider in providers.values():
+            if (not isinstance(provider, dict) or not isinstance(provider.get('case_ids'), list)
+                    or not provider['case_ids'] or not all(isinstance(i, str) and i for i in provider['case_ids'])
+                    or not isinstance(provider.get('handoff'), str) or not provider['handoff'].strip()):
+                raise ValueError('fixture provider requires case_ids and a handoff description')
+            for field in ('probe', 'provision'):
+                command = provider.get(field)
+                if (not isinstance(command, list) or not command or not all(isinstance(x, str) and x for x in command)
+                        or not Path(command[0]).is_absolute()):
+                    raise ValueError(f'fixture provider {field} must be a trusted argv array')
         for key in ('audit_identity_timeout_s', 'audit_identity_retry_s', 'audit_identity_max_attempts'):
             if key in result and (not isinstance(result[key], int) or isinstance(result[key], bool) or result[key] <= 0):
                 raise ValueError(f'{key} must be a positive integer')
