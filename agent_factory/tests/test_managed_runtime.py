@@ -499,31 +499,40 @@ def test_smoke_assignments_remember_early_ids_after_a_large_batch(tmp_path, monk
 
 
 def test_smoke_batch_surfaces_one_repeatedly_deferred_case_after_fixture_retry(tmp_path):
-    ids = ['new', 'stale', 'later', 'retry', 'finished']
+    ids = ['new', 'stale', 'stale-peer', 'later', 'retry', 'finished']
+    routes = {case_id: f'/{case_id}' for case_id in ids}
+    routes['stale-peer'] = routes['stale']
     state = {
         'run_meta': {'inventory_ids': ids, 'initial_build': 'pinned', 'smoke_retries': {'retry': 'Ready'}},
-        'cases': [{'case_id': case_id, 'scenario': {'route': f'/{case_id}'},
+        'cases': [{'case_id': case_id, 'scenario': {'route': routes[case_id]},
                    'initial': {'status': 'not_run'}} for case_id in ids],
         'smoke': {'retry': {'result': {'status': 'blocked', 'blocker': 'Missing fixture'}},
                   'finished': {'result': {'status': 'passed'}}},
     }
     plans = tmp_path / 'prepared.json'
-    plans.write_text(json.dumps({'plans': [{'id': case_id, 'route': f'/{case_id}',
+    plans.write_text(json.dumps({'plans': [{'id': case_id, 'route': routes[case_id],
                                            'roles': ['admin'], 'steps': ['Inspect page']} for case_id in ids]}))
 
     groups = audit_supervisor.execution_packet(
         state, plans, {'stale': 3, 'later': 4, 'finished': 3}, smoke=True,
     )
     assigned = [item for group in groups for item in group]
-    assert [item['plan']['id'] for item in assigned] == ['retry', 'stale', 'new', 'later']
+    assert [item['plan']['id'] for item in assigned] == ['retry']
+
+    state['smoke']['retry'] = {'result': {'status': 'passed'}}
+    groups = audit_supervisor.execution_packet(
+        state, plans, {'stale': 3, 'later': 4, 'finished': 3}, smoke=True,
+    )
+    assigned = [item for group in groups for item in group]
+    assert [item['plan']['id'] for item in assigned] == ['stale', 'stale-peer']
     assert [item['previous_assignments_without_verdict'] for item in assigned
             if 'previous_assignments_without_verdict' in item] == [3]
 
     groups = audit_supervisor.execution_packet(
         state, plans, {'stale': 8}, smoke=True, finalize_ids=['stale'],
     )
-    assert [item['plan']['id'] for group in groups for item in group] == ['retry', 'new', 'later']
-    for case_id in ('retry', 'new', 'later'):
+    assert {item['plan']['id'] for group in groups for item in group} == {'new', 'stale-peer', 'later'}
+    for case_id in ('new', 'stale-peer', 'later'):
         state['smoke'][case_id] = {'result': {'status': 'passed'}}
     groups = audit_supervisor.execution_packet(
         state, plans, {'stale': 8}, smoke=True, finalize_ids=['stale'],

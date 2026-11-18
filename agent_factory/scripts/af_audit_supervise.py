@@ -220,10 +220,11 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                     )
             if smoke and packets:
                 assignment = (
-                    "\nExecute only this functional smoke batch. Open the assigned routes in prepared profiles "
+                    "\nExecute only this functional smoke batch. Open the assigned routes in prepared profiles. "
                     "Handle queued fixture retries first, then the case marked previous_assignments_without_verdict. "
                     "For that case, execute the primary assertion or record the concrete prerequisite preventing it. "
-                    "Save any newly verified checkpoints and continue compatible work. "
+                    "Finish the remaining compatible primary assertions while the page and profile are open. "
+                    "Save any newly verified checkpoints. "
                     "Assert one primary action and outcome per scenario. Use one representative role unless "
                     "the capability differs by role. Verify save persistence for write workflows and direct role "
                     "differences when permissions are central. Omit extra viewport, history and repeat checks. "

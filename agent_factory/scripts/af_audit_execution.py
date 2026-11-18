@@ -59,6 +59,9 @@ def execution_packet(current, plan_path, assignments, *, smoke=False, finalize_i
         return (assignments.get(case_id, 0), not (remaining is not None and len(remaining) <= 1),
                 not key[0].startswith("/"), len(key[1]), not bool(focus.get("verified_checks")))
 
+    # Give a repeatedly deferred scenario a visit without unrelated routes
+    # competing for the worker's time. Same-page cases still share the visit.
+    visit_limit = 1 if smoke and focus_case is not None else (6 if smoke else 2)
     packets = []
     for key, members in sorted(visits.items(), key=priority):
         selected = sorted(members, key=lambda member: case_priority(key, *member))[:(6 if smoke else 3)]
@@ -73,6 +76,6 @@ def execution_packet(current, plan_path, assignments, *, smoke=False, finalize_i
                 "prior_smoke_blocker": current["smoke"][case_id]["result"].get("blocker")}
                if smoke_retry_due(current, case_id) else {}),
         } for case_id, focus in selected])
-        if len(packets) == (6 if smoke else 2):
+        if len(packets) == visit_limit:
             break
     return packets
