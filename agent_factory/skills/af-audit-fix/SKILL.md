@@ -144,6 +144,20 @@ the same build. One coordinator assigns each case before parallel browser work.
 
 ## Schedule by available prerequisites
 
+Enable `audit_smoke_local_recovery: true` when setting up a managed smoke
+run against a disposable loopback instance. Give either runner access to the
+run-owned fixture tools and private setup notes. When a local prerequisite is
+missing, reuse or provision the required account, record, or emulator state in
+that instance. Verify fixture readiness and continue the same scenario. If
+the setup would hold up the batch, record the blocker and attempted remedy so
+the supervisor can requeue that original alongside other work.
+
+Check whether the application can consume the requested fixture before
+creating it. Record demonstrated missing behavior as a product failure.
+Keep setup probes as prerequisite evidence and use observed application
+behavior for the scenario verdict. Retain any remaining blocker and the
+specific recovery already attempted.
+
 At every batch boundary, inspect current private fixture handoffs and prerequisite
 observations before selecting work. Group a shared missing prerequisite once in
 Praxis, with its affected original IDs and the exact evidence needed to unblock
