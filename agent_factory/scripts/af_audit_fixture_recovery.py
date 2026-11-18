@@ -26,9 +26,11 @@ BROWSER_REVISION = "fresh-browser-v1"
 
 
 def browser_interrupted(result):
-    if result.get("blocker", "").startswith(BROWSER_BLOCKERS):
+    blocker = result.get("blocker", "")
+    if blocker.startswith(BROWSER_BLOCKERS):
         return True
-    return any("ERR_INSUFFICIENT_RESOURCES" in str(observation)
+    return blocker.startswith("Local runtime interrupted:") and any(
+               "ERR_INSUFFICIENT_RESOURCES" in str(observation)
                for field in ("console", "network") for observation in (result.get(field) or []))
 
 

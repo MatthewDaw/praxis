@@ -255,10 +255,11 @@ def test_local_smoke_recovery_offers_one_attempt_alongside_pending_work():
     state = current()
     state["run_meta"]["target"] = "http://127.0.0.1:15184"
     state["smoke"] = {
-        "AUTH": {"result": {"status": "blocked", "blocker": "Missing local identity"}},
+        "AUTH": {"result": {"status": "blocked", "blocker": "Missing local identity",
+                            "network": ["net::ERR_INSUFFICIENT_RESOURCES"]}},
         "TEAMS": {"result": {"status": "blocked", "blocker": "Missing local team"}},
     }
-    config = {"audit_smoke_local_recovery": True}
+    config = {"audit_smoke_local_recovery": True, "audit_browser_probe": ["/browser-probe"]}
     saved = []
     verified = {"TEAMS": "New fixture independently verified"}
     assert offer_local_recovery(config, state, verified, set(), saved.append) == verified
