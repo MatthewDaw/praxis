@@ -940,6 +940,31 @@ af_take_worktree_lock(){
 }
 
 af_take_worktree_lock
+# The loop's own lock file must never be committed. An earlier run's `git add -A` swept it into a
+# "wip:" commit; once tracked it shows as a permanently modified file and rides every later commit.
+# Exclude it locally (.git/info/exclude, like test-results/) and drop any tracked copy, committing the
+# removal on its own so the index is left clean for merges.
+af_untrack_loop_lock(){
+  local xf
+  xf=$(git -C "$WT" rev-parse --git-path info/exclude 2>/dev/null || true)
+  case "$xf" in /*) ;; ?*) xf="$WT/$xf" ;; esac
+  if [ -n "$xf" ] && mkdir -p "$(dirname "$xf")" 2>/dev/null; then
+    grep -qxF '.af-loop.lock' "$xf" 2>/dev/null || echo '.af-loop.lock' >> "$xf" 2>/dev/null || true
+  fi
+  if git -C "$WT" ls-files --error-unmatch -- .af-loop.lock >/dev/null 2>&1; then
+    # update-index, not `git rm --cached`: in a sparse checkout the lock sits outside the patterns and
+    # `git rm --cached` quietly leaves the entry in place.
+    git -C "$WT" update-index --force-remove -- .af-loop.lock >/dev/null 2>&1 || true
+    # Not `commit -- .af-loop.lock`: --only re-reads the file from disk and re-adds it. Commit the
+    # staged removal itself, and only when it is the sole staged change.
+    if [ "$(git -C "$WT" diff --cached --name-only 2>/dev/null)" = ".af-loop.lock" ]; then
+      git -C "$WT" -c user.name="af-build" -c user.email="af-build@praxis.local" commit -q \
+        -m "chore: stop tracking the af-ticket-loop lock file" >/dev/null 2>&1 || true
+    fi
+  fi
+  return 0
+}
+af_untrack_loop_lock
 # Early trap so an exit BEFORE the full af_cleanup_on_exit trap is installed still frees the lock.
 # That trap replaces this one and calls af_release_worktree_lock itself, so every exit path — drain,
 # halt, SIGINT/SIGTERM, `tmux kill-session` — releases.
@@ -2234,10 +2259,20 @@ commit_wip(){
     [ "${#scope[@]}" -gt 0 ] || return 0
   fi
   if [ -n "$(git status --porcelain -- "${scope[@]}")" ]; then
-    git add -A -- "${scope[@]}"
-    git -c user.name="af-build" -c user.email="af-build@praxis.local" commit -q -m \
-      "wip: preserve in-flight output before per-batch session restart (af-ticket-loop)"
-    say "committed WIP: $(git log --oneline -1)"
+    git add -A -- "${scope[@]}" || true
+    # `git status` lists a tracked file that is modified OUTSIDE a sparse checkout's patterns (the loop's
+    # own .af-loop.lock, in mvpvue-league-core), but `git add -A` silently declines to stage it, so the
+    # commit below exits 1 with "no changes added to commit" -- and under `set -e` that killed the
+    # driver at EVERY round end, before integrate_round, 12 rounds running (2026-11-18). Commit only
+    # when something is actually staged, and never let a failed WIP commit take the round down with it.
+    if ! git diff --cached --quiet 2>/dev/null; then
+      if git -c user.name="af-build" -c user.email="af-build@praxis.local" commit -q -m \
+        "wip: preserve in-flight output before per-batch session restart (af-ticket-loop)"; then
+        say "committed WIP: $(git log --oneline -1)"
+      else
+        say "WARNING: WIP commit failed — continuing; loose files stay in the tree"
+      fi
+    fi
   fi
 }
 
@@ -2400,6 +2435,30 @@ integrate_round(){
   [ "$merged" -gt 0 ] && say "round integrated: $merged branch(es) merged into $(git rev-parse --abbrev-ref HEAD)"
   [ "$conflicted" -gt 0 ] && say "$conflicted branch(es) conflicted — handing them to the conflict resolver"
   [ "$skipped" -gt 0 ] && say "$skipped branch(es) skipped as unproven — their commits stay on their branches"
+  return 0
+}
+
+# Loop-level safety net for the integration contract: after a round end, no branch whose tickets are
+# ALL finished in Praxis may be left outside the integration HEAD. integrate_round, the orphan sweep and
+# the resolver are each supposed to prevent that; this says so loudly when they did not, because a
+# finished ticket whose branch never merged makes every later ticket build from the old base.
+# Uses the id sets integrate_round cached; silent (returns 0) when it never got to run.
+af_warn_unmerged_finished(){   # $1 = label
+  local br ids i ok=1 n=0 head_br
+  [ -n "${AF_FINISHED_IDS:-}" ] && [ -n "${AF_KNOWN_IDS:-}" ] || return 0
+  head_br=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+  while read -r br; do
+    [ -n "$br" ] && [ "$br" != "$head_br" ] || continue
+    git -C "$WT" merge-base --is-ancestor "$br" HEAD 2>/dev/null && continue
+    ids=$(cd "$WT" && af_owned_ids "HEAD..$br" "$AF_KNOWN_IDS" "$(cd "$WT" && af_base_ref || true)")
+    [ -n "$ids" ] || continue
+    ok=1
+    for i in $ids; do case "$AF_FINISHED_IDS" in *" $i "*) ;; *) ok=0 ;; esac; done
+    [ "$ok" = "1" ] || continue
+    n=$((n+1))
+    say "WARNING: $1 — branch $br holds finished ticket(s) [$ids] but is NOT merged into $(git -C "$WT" rev-parse --abbrev-ref HEAD); later tickets will build from the old base"
+  done < <(git -C "$WT" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null)
+  [ "$n" -eq 0 ] || say "WARNING: $1 — $n finished-ticket branch(es) remain unintegrated"
   return 0
 }
 
@@ -3498,7 +3557,13 @@ af_assert_no_stragglers(){
 af_cleanup_on_exit(){
   local rc=$?
   set +e
-  if [ "$rc" -ne 0 ] && [ -n "${AF_SERVICE_UNIT:-}" ]; then
+  # A non-zero exit is a FAILURE, and a failure must not be dressed up as a scheduler handoff: this
+  # used to prepare a handoff on every rc != 0, so a command that failed at a round boundary turned
+  # into "live scheduler handoff — preserving worker checkouts", skipped sweep/reap/integrate, and the
+  # retry did the same forever with nothing in the journal (mvpvue-league-core, 2026-11-18: ~12 rounds,
+  # zero integrations). Only an operator-requested handoff (a valid af_live_handoff record) counts;
+  # AF_HANDOFF_ON_FAILURE=1 opts back into adopting live workers after a crash.
+  if [ "$rc" -ne 0 ] && [ -n "${AF_SERVICE_UNIT:-}" ] && [ "${AF_HANDOFF_ON_FAILURE:-0}" = "1" ]; then
     "$PY" "$(dirname "${BASH_SOURCE[0]}")/af-stop-owned-scopes.py" --prepare-handoff >/dev/null 2>&1 || true
   fi
   if "$PY" "$(dirname "${BASH_SOURCE[0]}")/af_live_handoff.py" pending >/dev/null 2>&1; then
@@ -3591,6 +3656,17 @@ af_surface_flags(){
   printf '%s\n' "$out" | while IFS= read -r l; do [ -n "$l" ] && say "$l"; done
   return 0
 }
+# Say WHICH command failed before the shell exits. `set -e` kills the driver silently; with the exit
+# trap below that read as a healthy handoff. -E so functions report their own failing line; only the
+# driver shell itself reports, because command substitutions and pipelines fail routinely and report
+# through the exit status they hand back.
+af_report_failure(){
+  local rc=$1 line=$2 cmd=$3
+  [ "${BASHPID:-$$}" = "$$" ] || return 0
+  say "FAILED: line $line exited $rc in ${FUNCNAME[1]:-main}: $cmd" || true
+}
+set -E
+trap 'af_report_failure $? $LINENO "$BASH_COMMAND"' ERR
 trap af_cleanup_on_exit EXIT INT TERM
 
 # ------------------------------------------------------------------------------- loop-end hooks --
@@ -5085,9 +5161,13 @@ af_round_prompt(){ local ids_csv="$1" size="$2"; printf '%s' "/af-build $PROJECT
       fi
     fi
   done
-  [ "$waited" -ge "$deadline" ] && say "round #$round timed out after $((waited/60))min with $(batch_open "$@") ticket(s) still open"
+  if [ "$waited" -ge "$deadline" ]; then say "round #$round timed out after $((waited/60))min with $(batch_open "$@" || echo '?') ticket(s) still open"; fi
 
-  commit_wip
+  # ROUND-END SEQUENCE: none of these steps may take the driver down on an EXPECTED condition (a failed
+  # WIP commit, an absent tmux pane, a background verification that failed). A failure here used to exit
+  # non-zero, which the exit trap then reported as a scheduler handoff, so integrate_round never ran
+  # (mvpvue-league-core, 2026-11-18). Each step is best-effort and says so out loud when it fails.
+  commit_wip || say "WARNING: commit_wip failed (rc=$?) — continuing to integration"
   # Kill ONLY this session's own claude, never every claude on the box. The old blanket
   # `pkill -f "[c]laude --dangerously-skip-permissions"` matched the OTHER concurrently
   # running project's session too, so with two loops up (sotos + appeal_engine) each
@@ -5104,10 +5184,10 @@ af_round_prompt(){ local ids_csv="$1" size="$2"; printf '%s' "/af-build $PROJECT
   # until noticed by hand. An absent pane is a NORMAL state here, not an error.
   # AF_ROLLING: the sessions in AF_WORKER_SESSIONS belong to THIS batch only; carried next-batch
   # workers live in AF_CARRY_SESSIONS and survive the boundary.
-  af_kill_worker_sessions
+  af_kill_worker_sessions || true
   AF_WORKER_SESSIONS=""
   sleep 3
-  af_wait_verify
+  af_wait_verify || say "WARNING: background verification did not pass (rc=$?) — integrating anyway; the verify stage re-checks the merged tree"
   export AF_CARRY_IDS   # sweep_worktrees must not purge a carried worker's tree
   if [ "$factory_tree_violation" = "1" ]; then
     af_remove_clean_factory_nested_worktrees
@@ -5133,7 +5213,7 @@ af_round_prompt(){ local ids_csv="$1" size="$2"; printf '%s' "/af-build $PROJECT
   # already there, and the only honest reference is the exact tree the round merged into. Captured
   # here, before a single branch lands, because afterwards it is unrecoverable.
   AF_PREMERGE_SHA=$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo "")
-  salvage_external_grok_clones "${ids_csv:-}"
+  salvage_external_grok_clones "${ids_csv:-}" || say "WARNING: salvage_external_grok_clones failed (rc=$?) — continuing"
   integrate_round
   # REQUIRED, not optional: sweep in any branch stranded by an earlier round so the resolver lands it
   # too. Without this the resolver only ever fixes the round that created the conflict, and anything
@@ -5161,6 +5241,7 @@ af_round_prompt(){ local ids_csv="$1" size="$2"; printf '%s' "/af-build $PROJECT
   # next round lands it. It still forces a resolution pass and still logs loudly, so a straggler is
   # visible from the round it appears in rather than only at the end of the run.
   af_assert_no_stragglers "round #$round" 0 || true
+  af_warn_unmerged_finished "round #$round" || true
 
   # Loop-end hooks. Backgrounded, bounded, never waited on — see af_loop_end_hooks.
   af_loop_end_hooks "round #$round"
