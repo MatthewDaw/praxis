@@ -171,6 +171,10 @@ or visible state. Record which branch was verified.
 When the scenario makes an action conditional on the controls that are
 present, record whether the action exists and continue its independent checks,
 including any required role comparison.
+Verify the settled page against the source-backed action route before using
+absence as evidence. When a parent page has no editor, check the dedicated
+child page through normal navigation or its supported URL. Preserve any
+navigation failure as a separate observation when the action works there.
 Keep setup probes as prerequisite evidence and use observed application
 behavior for the scenario verdict. Retain any remaining blocker and the
 specific recovery already attempted.

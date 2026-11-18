@@ -233,6 +233,8 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                     "run-owned fixture organizations using the project instructions before declaring a blocker. "
                     "When an expected actor or record is absent from a picker, verify its required category, "
                     "scope, and lifecycle state. Repair an ineligible fixture and retry before assigning a product verdict. "
+                    "Before a missing-control verdict, verify the settled page against the source-backed action route. "
+                    "If the feature has a dedicated child page, check it through normal navigation or its supported URL. "
                     "Record ownership and cleanup references. When provisioning cannot supply the fixture, "
                     "record the concrete missing prerequisite as blocked. "
                     "Keep moving when one case is blocked. Use a single script for compatible work and one "

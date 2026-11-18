@@ -127,7 +127,9 @@ def prepare_shard(config, env, run_turn, directory, scope, cases):
             f"{config['audit_prompt_file']}. Write a JSON array to {result} with one object per case. "
             "Fields: id, route, roles (array), fixture, steps (array), expected, cleanup, reuse (array). "
             "Cite local source for uncertain actions, identify missing fixture prerequisites, and keep secrets out. "
-            "Use a concrete route and specific normal product actions wherever the source supports them."
+            "Use the concrete route where the named action is implemented, including nested route prefixes. "
+            "If a navigation link is itself under test, describe that entry route in steps. "
+            "A shared parent page is not a visit group for actions on different child pages."
         )
         run_turn(config, env, prompt, "prepare")
         if result.is_file():
