@@ -59,5 +59,14 @@ test('one-shot adapter records real stdin, exit, stream and refusal to overwrite
     const stubborn=JSON.parse(readFileSync(path.join(root,'stubborn/process.json')));
     assert.equal(stubborn.timedOut,true);
     assert.equal(stubborn.signal,'SIGKILL');
+    writeFileSync(cliPath, '#!/usr/bin/env node\nconsole.log(JSON.stringify({type:"turn.started"}));setInterval(()=>{},1000);\n');
+    const startup = path.join(root, 'startup-stall');
+    assert.equal(await runAgent({...options,outputDir:startup,startupTimeoutMs:500}), 1);
+    const stalled = JSON.parse(readFileSync(path.join(startup, 'process.json')));
+    assert.equal(stalled.startupTimedOut, true);
+    assert.equal(stalled.timedOut, false);
+    assert.match(readFileSync(path.join(startup, 'events.jsonl'), 'utf8'), /turn.started/);
+    writeFileSync(cliPath, '#!/usr/bin/env node\nconsole.log(JSON.stringify({type:"assistant"}));setTimeout(()=>console.log(JSON.stringify({type:"result",result:"done"})),650);\n');
+    assert.equal(await runAgent({...options,engine:'claude',outputDir:path.join(root,'started'),startupTimeoutMs:500}), 0);
   } finally { rmSync(root,{recursive:true,force:true}); }
 });

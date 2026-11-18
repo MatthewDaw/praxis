@@ -41,7 +41,8 @@ def agent_command(config: dict, prompt: Path, output: Path) -> list[str]:
     return [config['real_node'], str(Path(config['factory']) / 'skills/af-audit-fix/scripts/run-agent.mjs'),
             '--engine', engine, '--cwd', config['worktree'], '--prompt-file', str(prompt),
             '--output-dir', str(output), '--cli-path', str(Path(config['runtime']) / 'bin' / engine),
-            '--permissions', 'full-access', '--timeout-ms', str(config['audit_batch_timeout_s'] * 1000)]
+            '--permissions', 'full-access', '--timeout-ms', str(config['audit_batch_timeout_s'] * 1000),
+            '--startup-timeout-ms', str(min(240, config['audit_batch_timeout_s']) * 1000)]
 
 
 def run_turn(config: dict, env: dict, prompt: str, label: str) -> int:

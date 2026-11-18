@@ -112,10 +112,13 @@ assigned local coordinator to finish `fix` and `deploy` on the same Praxis run.
 The supervisor checks canonical phase after every bounded agent turn; process
 exit zero never passes a case. Three consecutive turns without canonical progress
 stop with exit 78 and require attention, rather than retrying indefinitely. Configure
-`audit_no_progress_limit` and `audit_batch_timeout_s` (default1800 seconds) only
+`audit_no_progress_limit` and `audit_batch_timeout_s` (default 1800 seconds) only
 when the workload warrants it. `complete` and `partial` are reported distinctly;
 a terminal partial run still has untested coverage. An explicit stop retains
 Praxis progress and evidence for a later restart.
+If a managed agent emits no work event for four minutes at startup, the runner
+ends that attempt and retains its logs. The supervisor resumes from Praxis
+after an interrupted attempt. Once work starts, the overall batch timeout applies.
 
 For hybrid audits, create a separate run for the local target and use
 `audit_smoke_case_ids` to limit the deployed worker to environment-dependent
