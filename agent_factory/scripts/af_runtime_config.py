@@ -37,6 +37,7 @@ DEFAULTS = {
     'application_env_file': None,
     'scoped_types_commands': ['check-ticket-types.ts'],
     'audit_phases': ['audit', 'reaudit'], 'audit_wait_phases': ['fix', 'deploy'],
+    'audit_smoke_pass': False,
     'audit_batch_timeout_s': 1800, 'audit_no_progress_limit': 3,
 }
 
@@ -53,6 +54,8 @@ def settings(values: dict) -> dict:
     if result['mode'] not in {'build', 'audit'}:
         raise ValueError('runtime mode must be build or audit')
     if result['mode'] == 'audit':
+        if type(result['audit_smoke_pass']) is not bool:
+            raise ValueError('audit_smoke_pass must be a boolean')
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,95}', result.get('audit_run', '')):
             raise ValueError('audit_run must name an explicit Praxis run')
         if not Path(result.get('audit_prompt_file', '')).is_absolute():

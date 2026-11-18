@@ -66,6 +66,20 @@ by scenario ID. It runs up to three preparation groups at once and uses the
 same preparation workflow for Codex and Claude.
 For unmanaged runs, use the same preparation and reuse steps before execution.
 
+## Functional smoke pass
+
+A managed audit with `audit_smoke_pass: true` checks the primary behavior of
+each outstanding scenario using representative roles and owned fixtures.
+Verify persistence when a write is the primary behavior. Exercise actual role
+differences when permissions are central. Reuse matching evidence, reproduce
+a product failure once, and record missing prerequisites as blocked. Leave
+extra device, history and equivalent-profile checks for the full audit.
+
+Submit smoke results with `record-smoke --input` using the same input shape as
+`record-batch`. See `queue` for counts. Smoke outcomes never populate full
+verdicts or advance the audit phase. Completed full verdicts count as existing
+coverage in the smoke queue.
+
 ## Use each page visit for a batch
 
 When the managed supervisor attaches execution packets, use their scenario

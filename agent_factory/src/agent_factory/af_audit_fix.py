@@ -261,6 +261,36 @@ class Audit:
                 self.patch(fact, changes)
         return [receipt for _, receipt, _ in validated]
 
+    def record_smoke(self, entries: list[dict]) -> list[dict]:
+        """Record lighter coverage independently of full-audit verdicts."""
+        require(isinstance(entries, list) and bool(entries), "nonempty smoke batch required")
+        facts = {f["meta"]["audit_key"]: f["meta"] for f in self.facts()}
+        run = facts["run"]
+        require(run["phase"] == "audit", "smoke evidence requires an open initial audit")
+        original = set(run.get("inventory_ids", []))
+        results = {}
+        for entry in entries:
+            case_id, result = entry["case_id"], entry["result"]
+            require(case_id in original and case_id not in results, "unexpected or duplicate original smoke case")
+            case = facts["case:" + case_id]
+            require(case["initial"]["status"] not in ("passed", "failed"), "reuse the full verdict")
+            self.validate_result(result, run["initial_build"], run["target"], case["scenario"])
+            serialized = json.dumps(result)
+            require(redact_secrets(serialized) == serialized, "redact smoke evidence")
+            prior = facts.get("smoke:" + case_id)
+            require(prior is None or prior["result"] == result, "smoke result already recorded")
+            results[case_id] = result
+        for case_id, result in results.items():
+            key = "smoke:" + case_id
+            if key not in facts:
+                meta = {"audit_run": self.run, "audit_key": key, "case_id": case_id,
+                        "result": result, "recorded_at": datetime.now(timezone.utc).isoformat()}
+                self.client._request("POST", "/insights", body={
+                    "insight": f"Audit {self.project}/{self.run}: {key}", "category": CATEGORY,
+                    "raw": True, "meta": meta,
+                }, **self.scope)
+        return [{"case_id": case_id, "status": result["status"]} for case_id, result in results.items()]
+
     def _record_change(self, case_id, fact, result, run):
         phase = run["phase"]
         slot = "initial" if phase == "audit" else "reaudit"
@@ -458,6 +488,8 @@ class Audit:
                 "inventory_counts": inventory_counts, "added_cases": len(cases) - len(original) if original else None,
                 "coverage_links": links,
                 "sweeps": sweeps,
+                "smoke": {f["meta"]["case_id"]: f["meta"] for f in facts
+                          if f["meta"]["audit_key"].startswith("smoke:")},
                 "full_coverage": counts["blocked"] == 0 and counts["not_run"] == 0,
                 "failed_ids": run.get("failed_ids", []), "run_meta": run, "cases": cases,
                 "regression_neighbors": [f["meta"] for f in facts if f["meta"]["audit_key"].startswith("neighbor:")]}
@@ -515,6 +547,7 @@ def main(argv: list[str] | None = None) -> int:
     record.add_argument("--receipt", action="store_true", help="return only the accepted case verdict")
     record.add_argument("--case", required=True)
     record.add_argument("--input", required=True)
+    sub.add_parser("record-smoke").add_argument("--input", required=True)
     sub.add_parser("record-batch").add_argument("--input", required=True)
     sub.add_parser("record-sweep").add_argument("--input", required=True)
     advance = sub.add_parser("advance")
@@ -537,6 +570,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "check":
             checks = audit.check_many(args.case)
             output = checks[0] if len(checks) == 1 else checks
+        elif args.command == "record-smoke":
+            output = audit.record_smoke(data)
         elif args.command == "record-batch":
             output = audit.record_batch(data)
         elif args.command == "record-sweep":

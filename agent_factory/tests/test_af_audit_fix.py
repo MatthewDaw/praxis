@@ -345,3 +345,18 @@ def test_record_batch_validates_all_verdicts_before_writing(audit):
     b["result"]["build"] = "sha1"
     assert audit.record_batch([a, b]) == audit.record_batch([a, b])
     assert audit.status()["counts"]["passed"] == 2
+
+
+def test_smoke_results_do_not_close_original_scenarios(audit):
+    result = {"case_id": "A", "result": evidence()}
+    assert audit.record_smoke([result]) == audit.record_smoke([result])
+    status = audit.status()
+    assert status["smoke"]["A"]["result"]["status"] == "passed"
+    assert status["inventory_counts"]["passed"] == 0
+    with pytest.raises(ValueError, match="unexecuted"):
+        freeze(audit)
+    audit.record("B", evidence())
+    from agent_factory.af_audit_queue import audit_queue
+    assert audit_queue(audit.status())["smoke_progress"] == {
+        "total": 2, "passed": 1, "failed": 0, "blocked": 0, "reused_full": 1, "pending": 0,
+    }

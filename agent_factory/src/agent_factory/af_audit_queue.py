@@ -18,6 +18,25 @@ def _context(scenario):
     )
 
 
+def smoke_progress(status):
+    """Present independent smoke outcomes, reusing original terminal verdicts."""
+    meta = status.get("run_meta", {})
+    originals = set(meta.get("inventory_ids", []))
+    smoke = status.get("smoke", {})
+    counts = Counter()
+    for case in status.get("cases", []):
+        case_id = case["case_id"]
+        if case_id not in originals:
+            continue
+        if case["initial"]["status"] in ("passed", "failed"):
+            counts["reused_full"] += 1
+        elif case_id in smoke:
+            counts[smoke[case_id]["result"]["status"]] += 1
+        else:
+            counts["pending"] += 1
+    return {"total": len(originals), **{k: counts[k] for k in ("passed", "failed", "blocked", "reused_full", "pending")}}
+
+
 def audit_queue(status, *, now=None):
     """Read-only view. The persisted original IDs remain the progress denominator."""
     meta = status["run_meta"]
@@ -82,7 +101,7 @@ def audit_queue(status, *, now=None):
         if not counts["blocked"] and dispatch:
             eta["full_audit_hours"] = eta["runnable_hours"]
     return {"state": "mapped", "phase": "initial_audit", "build": meta["initial_build"],
-            "progress": progress, "eta": eta, "sweep_metrics": metrics, "batches": batches,
+            "progress": progress, "smoke_progress": smoke_progress(status), "eta": eta, "sweep_metrics": metrics, "batches": batches,
             "completed_cases": completed_cases,
             "additional_cases": [c["case_id"] for c in status["cases"] if c["case_id"] not in set_originals]}
 

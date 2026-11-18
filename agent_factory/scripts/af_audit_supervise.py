@@ -11,6 +11,7 @@ import time
 import uuid
 
 from af_audit_execution import execution_packet
+from agent_factory.af_audit_queue import smoke_progress
 from af_audit_prepare import prepare
 from af_audit_prerequisites import identity_plan, directive
 
@@ -112,12 +113,18 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
     no_progress = 0
     identity_notice = None
     browser_ready = False
+    smoke = config.get("audit_smoke_pass", False)
     recent = deque(maxlen=24)
     while True:
         before = status(config, env)
         phase = before['phase']
         print(json.dumps({'event': 'audit_phase_observed', 'phase': phase,
                           'counts': before.get('counts', {})}), flush=True)
+        if smoke and phase == 'audit':
+            progress = smoke_progress(before)
+            print(json.dumps({"event": "audit_smoke_progress", **progress}), flush=True)
+            if progress["total"] and progress["pending"] == 0:
+                return 0
         if phase in TERMINAL:
             # partial remains plainly partial; service success only means it stopped
             # correctly, never that every case passed.
@@ -141,7 +148,7 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                 queue_state = {**before, "run_meta": {**before["run_meta"], "queue_deferrals": {
                     "identity": plan.get("deferred_identity_ids", []), "external": plan.get("deferred_external_ids", []),
                 }}}
-                packets = execution_packet(queue_state, preparation, recent)
+                packets = execution_packet(queue_state, preparation, recent, smoke=smoke)
                 if packets:
                     recent.extend(item["plan"]["id"] for group in packets for item in group)
                     assignment = (
@@ -157,6 +164,24 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                         + json.dumps({"target": before["run_meta"].get("target"),
                                       "build": before["run_meta"]["initial_build"], "groups": packets})
                     )
+            if smoke and packets:
+                assignment = (
+                    "\nExecute only this functional smoke batch. Open the assigned routes in prepared profiles "
+                    "and assert one primary action and outcome for each scenario. Use one representative role unless "
+                    "the capability differs by role. Verify save persistence for write workflows and direct role "
+                    "differences when permissions are central. Omit extra viewport, history and repeat checks. "
+                    "Reuse scoped verified evidence when it covers the primary action. If a real product failure "
+                    "appears, reproduce it once. A missing fixture is blocked, with the concrete missing prerequisite. "
+                    "Keep moving when one case is blocked. Use a single script for compatible work and one "
+                    "record-smoke --input call for the outcome array with case_id and result. Reference actual retained "
+                    "evidence. These records are smoke scope only. Return right after recording. "
+                    "The attached snapshot replaces a full ledger read. Never write a full verdict or advance an audit phase.\n"
+                    + json.dumps({"target": before["run_meta"]["target"],
+                                  "build": before["run_meta"]["initial_build"], "groups": packets})
+                )
+            elif smoke and not plan.get('wait_for_identity'):
+                print(json.dumps({"event": "audit_smoke_waiting_on_prerequisites", **smoke_progress(before)}), flush=True)
+                return 78
             if plan['no_runnable_originals'] and plan['deferred_identity_ids']:
                 notice = fingerprint(plan['dependency'])
                 if notice != identity_notice:
@@ -188,7 +213,8 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                   Path(config['audit_prompt_file']).read_text() + assignment)
         result = run_turn(config, env, prompt, phase)
         after = status(config, env)
-        if fingerprint(before) == fingerprint(after):
+        if (before.get("smoke") == after.get("smoke") if smoke
+                else fingerprint(before) == fingerprint(after)):
             no_progress += 1
         else:
             no_progress = 0
