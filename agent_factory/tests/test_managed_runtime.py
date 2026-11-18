@@ -439,6 +439,45 @@ def test_prerequisite_handler_uses_same_scoped_environment_as_status(tmp_path, m
     assert 'synthetic-private-key' not in options['input']
 
 
+def test_smoke_assignments_remember_early_ids_after_a_large_batch(tmp_path, monkeypatch):
+    config = audit_values(tmp_path)
+    config.update(factory='/factory', audit_smoke_pass=True, audit_no_progress_limit=3)
+    ids = [f'case-{i}' for i in range(27)]
+    pending = {
+        'phase': 'audit', 'smoke': {},
+        'run_meta': {'inventory_ids': ids, 'initial_build': 'pinned', 'target': 'http://localhost:15184'},
+        'cases': [{'case_id': item, 'initial': {'status': 'not_run'}} for item in ids],
+    }
+    snapshot = dict(pending)
+    monkeypatch.setattr(audit_supervisor, 'status', lambda *_: snapshot)
+    monkeypatch.setattr(audit_supervisor, 'prepare', lambda *_: ('prepared', True))
+    monkeypatch.setattr(audit_supervisor, 'plan_assignment', lambda *_: {
+        'no_runnable_originals': False, 'deferred_identity_ids': [],
+    })
+    turns = 0
+
+    def dispatch(_state, _preparation, counts, *, smoke):
+        assert smoke
+        if turns == 0:
+            return [[{'plan': {'id': item}} for item in ids]]
+        assert counts.get(ids[0]) == 1
+        assert counts.get(ids[-1]) == 1
+        return [[{'plan': {'id': ids[0]}}]]
+
+    def run_turn(*_):
+        nonlocal turns
+        turns += 1
+        if turns == 2:
+            snapshot['phase'] = 'complete'
+        return 0
+
+    monkeypatch.setattr(audit_supervisor, 'execution_packet', dispatch)
+    monkeypatch.setattr(audit_supervisor, 'run_turn', run_turn)
+    monkeypatch.setattr(audit_supervisor, 'preflight', lambda *_: None)
+    assert audit_supervisor.supervise(config, {'PRAXIS_ORG': 'test-org'}) == 0
+    assert turns == 2
+
+
 def test_identity_wait_reprobes_and_then_runs_without_anonymous_turn(tmp_path, monkeypatch):
     config = audit_values(tmp_path)
     config.update(factory='/factory', audit_no_progress_limit=2)

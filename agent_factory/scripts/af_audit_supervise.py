@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections import deque
+from collections import Counter
 from pathlib import Path
 import subprocess
 import tempfile
@@ -126,7 +126,7 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
     identity_notice = None
     browser_ready = False
     smoke = config.get("audit_smoke_pass", False)
-    recent = deque(maxlen=24)
+    assignments = Counter()
     while True:
         canonical = before = status(config, env)
         phase = before['phase']
@@ -166,9 +166,9 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                 queue_state = {**before, "run_meta": {**before["run_meta"], "queue_deferrals": {
                     "identity": plan.get("deferred_identity_ids", []), "external": plan.get("deferred_external_ids", []),
                 }}}
-                packets = execution_packet(queue_state, preparation, recent, smoke=smoke)
+                packets = execution_packet(queue_state, preparation, assignments, smoke=smoke)
                 if packets:
-                    recent.extend(item["plan"]["id"] for group in packets for item in group)
+                    assignments.update(item["plan"]["id"] for group in packets for item in group)
                     assignment = (
                         "\nUse these scoped execution packets. The supervisor has already read Praxis "
                         "for the assigned cases. Use the attached inventory and verified evidence. "
