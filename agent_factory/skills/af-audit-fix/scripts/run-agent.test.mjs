@@ -69,5 +69,13 @@ test('one-shot adapter records real stdin, exit, stream and refusal to overwrite
     assert.match(readFileSync(path.join(startup, 'events.jsonl'), 'utf8'), /turn.started/);
     writeFileSync(cliPath, '#!/usr/bin/env node\nconsole.log(JSON.stringify({type:"assistant"}));setTimeout(()=>console.log(JSON.stringify({type:"result",result:"done"})),650);\n');
     assert.equal(await runAgent({...options,engine:'claude',outputDir:path.join(root,'started'),startupTimeoutMs:500}), 0);
+    writeFileSync(cliPath, '#!/usr/bin/env node\nconsole.log(JSON.stringify({type:"item.completed",item:{id:"done"}}));setInterval(()=>{},1000);\n');
+    const idle = path.join(root, 'idle-stall');
+    assert.equal(await runAgent({...options,outputDir:idle,idleTimeoutMs:500}), 1);
+    assert.equal(JSON.parse(readFileSync(path.join(idle,'process.json'))).idleTimedOut,true);
+    writeFileSync(cliPath, '#!/usr/bin/env node\nconst item={id:"tool",type:"command_execution"};console.log(JSON.stringify({type:"item.started",item}));setTimeout(()=>{console.log(JSON.stringify({type:"item.completed",item}));console.log(JSON.stringify({type:"turn.completed"}));},650);\n');
+    assert.equal(await runAgent({...options,outputDir:path.join(root,'active-tool'),idleTimeoutMs:500}), 0);
+    writeFileSync(cliPath, '#!/usr/bin/env node\nconst emit=(type,content)=>console.log(JSON.stringify({type,message:{content}}));emit("assistant",[{type:"tool_use",id:"abc"}]);setTimeout(()=>{emit("user",[{type:"tool_result",tool_use_id:"abc"}]);console.log(JSON.stringify({type:"result",result:"done"}));},650);\n');
+    assert.equal(await runAgent({...options,engine:'claude',outputDir:path.join(root,'claude-tool'),idleTimeoutMs:500}), 0);
   } finally { rmSync(root,{recursive:true,force:true}); }
 });

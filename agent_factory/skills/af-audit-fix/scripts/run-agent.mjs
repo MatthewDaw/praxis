@@ -58,10 +58,11 @@ function findExecutable(engine, supplied) {
 
 export async function runAgent(options) {
   const { engine, cwd, promptFile, outputDir, cliPath, permissions = 'default',
-    timeoutMs = 0, startupTimeoutMs = 0 } = options;
+    timeoutMs = 0, startupTimeoutMs = 0, idleTimeoutMs = 0 } = options;
   if (!cwd || !promptFile || !outputDir) throw new Error('cwd, prompt-file and output-dir are required');
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0) throw new Error('timeout-ms must be a nonnegative integer');
   if (!Number.isSafeInteger(startupTimeoutMs) || startupTimeoutMs < 0) throw new Error('startup-timeout-ms must be a nonnegative integer');
+  if (!Number.isSafeInteger(idleTimeoutMs) || idleTimeoutMs < 0) throw new Error('idle-timeout-ms must be a nonnegative integer');
   const prompt = readFileSync(promptFile, 'utf8');
   if (!prompt.trim()) throw new Error('prompt-file is empty');
   const launch = invocation(engine, findExecutable(engine, cliPath), path.resolve(cwd), permissions);
@@ -77,10 +78,11 @@ export async function runAgent(options) {
   }
   const startedAt = new Date().toISOString();
   let failed = false, completed = false, finalText = '', pending = '', parseErrors = 0, timedOut = false;
-  let startupTimer, startupTimedOut = false;
+  let startupTimer, startupTimedOut = false, idleTimer, idleTimedOut = false;
   const startupEvents = new Set(engine === 'codex'
     ? ['item.started', 'item.completed', 'turn.completed', 'turn.failed']
     : ['assistant', 'user', 'result']);
+  const pendingTools = new Set();
   const child = spawn(launch.command, launch.args, { cwd: launch.cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
   const status = extra => writeFileSync(handles[3], JSON.stringify({ engine, startedAt, pid: child.pid ?? null, auditOutcome: 'not_determined_by_runner', ...extra }, null, 2));
   status({ processState: 'running' });
@@ -88,8 +90,23 @@ export async function runAgent(options) {
     if (!line.trim()) return;
     try {
       const event = JSON.parse(line);
-      if (startupEvents.has(event.type)) clearTimeout(startupTimer);
       const result = interpretEvent(engine, event);
+      if (startupEvents.has(event.type)) {
+        clearTimeout(startupTimer);
+        clearTimeout(idleTimer);
+        if (engine === 'codex') {
+          if (event.type === 'item.started' && event.item?.id) pendingTools.add(event.item.id);
+          if (event.type === 'item.completed') pendingTools.delete(event.item?.id);
+        } else if (Array.isArray(event.message?.content)) {
+          for (const content of event.message.content) {
+            if (content.type === 'tool_use' && content.id) pendingTools.add(content.id);
+            if (content.type === 'tool_result') pendingTools.delete(content.tool_use_id);
+          }
+        }
+        if (idleTimeoutMs && !pendingTools.size && !result.completed && !result.failed && event.type !== 'result') {
+          idleTimer = setTimeout(() => { idleTimedOut = true; terminate(); }, idleTimeoutMs);
+        }
+      }
       failed ||= result.failed === true;
       completed ||= result.completed === true || (engine === 'claude' && result.result !== undefined);
       if (result.result !== undefined) finalText = result.result;
@@ -138,24 +155,26 @@ export async function runAgent(options) {
   process.removeListener('SIGINT', interrupt);
   process.removeListener('SIGTERM', interrupt);
   consume(pending);
-  const success = outcome.exitCode === 0 && !failed && completed && !parseErrors && !timedOut && !startupTimedOut && !interrupted;
+  clearTimeout(idleTimer);
+  const success = outcome.exitCode === 0 && !failed && completed && !parseErrors && !timedOut && !startupTimedOut && !idleTimedOut && !interrupted;
   writeFileSync(handles[2], finalText);
   // Truncate before rewriting the same descriptor (offset remains at the first write's end).
   closeSync(handles[3]);
-  writeFileSync(files['process.json'], JSON.stringify({ engine, startedAt, finishedAt: new Date().toISOString(), pid: child.pid ?? null, processState: success ? 'exited' : 'failed', ...outcome, semanticError: failed, completedEvent: completed, parseErrors, timedOut, startupTimedOut, interrupted, auditOutcome: 'not_determined_by_runner' }, null, 2), { mode: 0o600 });
+  writeFileSync(files['process.json'], JSON.stringify({ engine, startedAt, finishedAt: new Date().toISOString(), pid: child.pid ?? null, processState: success ? 'exited' : 'failed', ...outcome, semanticError: failed, completedEvent: completed, parseErrors, timedOut, startupTimedOut, idleTimedOut, interrupted, auditOutcome: 'not_determined_by_runner' }, null, 2), { mode: 0o600 });
   for (const handle of handles.slice(0, 3)) closeSync(handle);
   return success ? 0 : 1;
 }
 
 function parseArgs(argv) {
   const options = {};
-  const names = { '--engine': 'engine', '--cwd': 'cwd', '--prompt-file': 'promptFile', '--output-dir': 'outputDir', '--cli-path': 'cliPath', '--permissions': 'permissions', '--timeout-ms': 'timeoutMs', '--startup-timeout-ms': 'startupTimeoutMs' };
+  const names = { '--engine': 'engine', '--cwd': 'cwd', '--prompt-file': 'promptFile', '--output-dir': 'outputDir', '--cli-path': 'cliPath', '--permissions': 'permissions', '--timeout-ms': 'timeoutMs', '--startup-timeout-ms': 'startupTimeoutMs', '--idle-timeout-ms': 'idleTimeoutMs' };
   for (let index = 0; index < argv.length; index += 2) {
     if (!names[argv[index]] || argv[index + 1] === undefined) throw new Error(`Unknown or missing option: ${argv[index]}`);
     options[names[argv[index]]] = argv[index + 1];
   }
   if (options.timeoutMs !== undefined) options.timeoutMs = Number(options.timeoutMs);
   if (options.startupTimeoutMs !== undefined) options.startupTimeoutMs = Number(options.startupTimeoutMs);
+  if (options.idleTimeoutMs !== undefined) options.idleTimeoutMs = Number(options.idleTimeoutMs);
   return options;
 }
 

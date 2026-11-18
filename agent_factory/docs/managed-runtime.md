@@ -119,6 +119,8 @@ Praxis progress and evidence for a later restart.
 If a managed agent emits no work event for four minutes at startup, the runner
 ends that attempt and retains its logs. The supervisor resumes from Praxis
 after an interrupted attempt. Once work starts, the overall batch timeout applies.
+After a work event, five minutes of silence between tool calls also ends an
+attempt. A tool call in progress keeps the overall batch timeout.
 
 For hybrid audits, create a separate run for the local target and use
 `audit_smoke_case_ids` to limit the deployed worker to environment-dependent

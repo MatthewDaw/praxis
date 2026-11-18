@@ -42,7 +42,8 @@ def agent_command(config: dict, prompt: Path, output: Path) -> list[str]:
             '--engine', engine, '--cwd', config['worktree'], '--prompt-file', str(prompt),
             '--output-dir', str(output), '--cli-path', str(Path(config['runtime']) / 'bin' / engine),
             '--permissions', 'full-access', '--timeout-ms', str(config['audit_batch_timeout_s'] * 1000),
-            '--startup-timeout-ms', str(min(240, config['audit_batch_timeout_s']) * 1000)]
+            '--startup-timeout-ms', str(min(240, config['audit_batch_timeout_s']) * 1000),
+            '--idle-timeout-ms', str(min(300, config['audit_batch_timeout_s']) * 1000)]
 
 
 def run_turn(config: dict, env: dict, prompt: str, label: str) -> int:
