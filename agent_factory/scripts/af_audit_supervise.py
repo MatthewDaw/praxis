@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections import Counter
 from pathlib import Path
 import subprocess
@@ -127,6 +128,10 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
     browser_ready = False
     smoke = config.get("audit_smoke_pass", False)
     assignments = Counter()
+    if smoke:
+        assignment_path = Path(config['runtime']) / 'state' / f"audit-assignments-{config['audit_run']}.json"
+        if assignment_path.exists():
+            assignments.update(json.loads(assignment_path.read_text()))
     while True:
         canonical = before = status(config, env)
         phase = before['phase']
@@ -175,6 +180,16 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                 packets = execution_packet(queue_state, preparation, assignments, smoke=smoke)
                 if packets:
                     assignments.update(item["plan"]["id"] for group in packets for item in group)
+                    if smoke:
+                        assignment_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        with tempfile.NamedTemporaryFile(mode='w', dir=assignment_path.parent, delete=False) as handle:
+                            staged = Path(handle.name)
+                            try:
+                                json.dump(assignments, handle)
+                                handle.flush()
+                                os.replace(staged, assignment_path)
+                            finally:
+                                staged.unlink(missing_ok=True)
                     assignment = (
                         "\nUse these scoped execution packets. The supervisor has already read Praxis "
                         "for the assigned cases. Use the attached inventory and verified evidence. "
@@ -191,7 +206,10 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
             if smoke and packets:
                 assignment = (
                     "\nExecute only this functional smoke batch. Open the assigned routes in prepared profiles "
-                    "and assert one primary action and outcome for each scenario. Use one representative role unless "
+                    "Handle queued fixture retries first, then the case marked previous_assignments_without_verdict. "
+                    "For that case, execute the primary assertion or record the concrete prerequisite preventing it. "
+                    "Save any newly verified checkpoints and continue compatible work. "
+                    "Assert one primary action and outcome per scenario. Use one representative role unless "
                     "the capability differs by role. Verify save persistence for write workflows and direct role "
                     "differences when permissions are central. Omit extra viewport, history and repeat checks. "
                     "Reuse scoped verified evidence when it covers the primary action. If a real product failure "

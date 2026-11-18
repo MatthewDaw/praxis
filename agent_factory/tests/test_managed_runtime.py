@@ -448,6 +448,9 @@ def test_smoke_assignments_remember_early_ids_after_a_large_batch(tmp_path, monk
         'run_meta': {'inventory_ids': ids, 'initial_build': 'pinned', 'target': 'http://localhost:15184'},
         'cases': [{'case_id': item, 'initial': {'status': 'not_run'}} for item in ids],
     }
+    recorded = Path(config['runtime']) / 'state' / 'audit-assignments-test-run.json'
+    recorded.parent.mkdir(parents=True, exist_ok=True)
+    recorded.write_text(json.dumps({ids[0]: 2}))
     snapshot = dict(pending)
     monkeypatch.setattr(audit_supervisor, 'status', lambda *_: snapshot)
     monkeypatch.setattr(audit_supervisor, 'prepare', lambda *_: ('prepared', True))
@@ -459,8 +462,9 @@ def test_smoke_assignments_remember_early_ids_after_a_large_batch(tmp_path, monk
     def dispatch(_state, _preparation, counts, *, smoke):
         assert smoke
         if turns == 0:
+            assert counts[ids[0]] == 2
             return [[{'plan': {'id': item}} for item in ids]]
-        assert counts.get(ids[0]) == 1
+        assert counts.get(ids[0]) == 3
         assert counts.get(ids[-1]) == 1
         return [[{'plan': {'id': ids[0]}}]]
 
@@ -476,6 +480,29 @@ def test_smoke_assignments_remember_early_ids_after_a_large_batch(tmp_path, monk
     monkeypatch.setattr(audit_supervisor, 'preflight', lambda *_: None)
     assert audit_supervisor.supervise(config, {'PRAXIS_ORG': 'test-org'}) == 0
     assert turns == 2
+    assert json.loads(recorded.read_text())[ids[0]] == 4
+
+
+def test_smoke_batch_surfaces_one_repeatedly_deferred_case_after_fixture_retry(tmp_path):
+    ids = ['new', 'stale', 'later', 'retry', 'finished']
+    state = {
+        'run_meta': {'inventory_ids': ids, 'initial_build': 'pinned', 'smoke_retries': {'retry': 'Ready'}},
+        'cases': [{'case_id': case_id, 'scenario': {'route': f'/{case_id}'},
+                   'initial': {'status': 'not_run'}} for case_id in ids],
+        'smoke': {'retry': {'result': {'status': 'blocked', 'blocker': 'Missing fixture'}},
+                  'finished': {'result': {'status': 'passed'}}},
+    }
+    plans = tmp_path / 'prepared.json'
+    plans.write_text(json.dumps({'plans': [{'id': case_id, 'route': f'/{case_id}',
+                                           'roles': ['admin'], 'steps': ['Inspect page']} for case_id in ids]}))
+
+    groups = audit_supervisor.execution_packet(
+        state, plans, {'stale': 3, 'later': 4, 'finished': 3}, smoke=True,
+    )
+    assigned = [item for group in groups for item in group]
+    assert [item['plan']['id'] for item in assigned] == ['retry', 'stale', 'new', 'later']
+    assert [item['previous_assignments_without_verdict'] for item in assigned
+            if 'previous_assignments_without_verdict' in item] == [3]
 
 
 def test_smoke_supervisor_waits_for_recoverable_fixture_and_reports_unresolved_blocker(tmp_path, monkeypatch):

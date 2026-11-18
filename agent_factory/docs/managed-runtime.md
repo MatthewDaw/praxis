@@ -149,6 +149,9 @@ this browser-specific interruption. The retry preserves completed checks.
 When no verified fixture retry is already queued, the handler queues one
 worker-led recovery alongside ordinary work. Each eligible blocker gets one
 such recovery attempt.
+The supervisor also retains smoke assignment counts across restarts. A case
+assigned at least three times without a verdict gets a focused slot behind
+verified fixture retries. Other cases remain eligible in the same batch.
 The prior blocker stays in the ledger, with the recovery outcome attached to
 the same original case. This does not apply to deployed targets, reserved
 assignments, or cases already deferred by a prerequisite handler.

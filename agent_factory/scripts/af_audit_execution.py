@@ -29,6 +29,15 @@ def execution_packet(current, plan_path, assignments, *, smoke=False):
     if not visits:
         return []
 
+    focus_case = None
+    if smoke:
+        focus_case = min(
+            (case_id for members in visits.values() for case_id, _ in members
+             if assignments.get(case_id, 0) >= 3 and not smoke_retry_due(current, case_id)),
+            key=lambda case_id: (assignments[case_id], case_id),
+            default=None,
+        )
+
     def priority(item):
         key, members = item
         return min(case_priority(key, case_id, focus) for case_id, focus in members)
@@ -36,7 +45,8 @@ def execution_packet(current, plan_path, assignments, *, smoke=False):
     def case_priority(key, case_id, focus):
         remaining = focus.get("remaining")
         if smoke:
-            return (not smoke_retry_due(current, case_id), assignments.get(case_id, 0), not key[0].startswith("/"), ":" in key[0],
+            return (not smoke_retry_due(current, case_id), case_id != focus_case,
+                    assignments.get(case_id, 0), not key[0].startswith("/"), ":" in key[0],
                     not bool(focus.get("verified_checks")), len(prepared[case_id]["steps"]))
         return (assignments.get(case_id, 0), not (remaining is not None and len(remaining) <= 1),
                 not key[0].startswith("/"), len(key[1]), not bool(focus.get("verified_checks")))
@@ -50,6 +60,7 @@ def execution_packet(current, plan_path, assignments, *, smoke=False):
             "current": cases[case_id]["initial"],
             "checkpoint_focus": focus,
             "linked_verdicts": links[case_id],
+            **({"previous_assignments_without_verdict": assignments[case_id]} if case_id == focus_case else {}),
             **({"new_fixture": current["run_meta"]["smoke_retries"][case_id],
                 "prior_smoke_blocker": current["smoke"][case_id]["result"].get("blocker")}
                if smoke_retry_due(current, case_id) else {}),
