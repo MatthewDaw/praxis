@@ -5,7 +5,7 @@ from collections import defaultdict
 from agent_factory.af_audit_queue import audit_queue, smoke_retry_due
 
 
-def execution_packet(current, plan_path, assignments, *, smoke=False):
+def execution_packet(current, plan_path, assignments, *, smoke=False, finalize_ids=()):
     prepared = {p["id"]: p for p in json.loads(plan_path.read_text())["plans"]}
     cases = {case["case_id"]: case for case in current["cases"]}
     links = defaultdict(list)
@@ -28,6 +28,14 @@ def execution_packet(current, plan_path, assignments, *, smoke=False):
             visits[key].append((case_id, focus))
     if not visits:
         return []
+
+    if smoke and finalize_ids:
+        final = set(finalize_ids)
+        ordinary = {
+            key: [(case_id, focus) for case_id, focus in members if case_id not in final]
+            for key, members in visits.items()
+        }
+        visits = {key: members for key, members in ordinary.items() if members} or visits
 
     focus_case = None
     if smoke:

@@ -474,7 +474,7 @@ def test_smoke_assignments_remember_early_ids_after_a_large_batch(tmp_path, monk
     })
     turns = 0
 
-    def dispatch(_state, _preparation, counts, *, smoke):
+    def dispatch(_state, _preparation, counts, *, smoke, finalize_ids):
         assert smoke
         if turns == 0:
             assert counts[ids[0]] == 2
@@ -518,6 +518,17 @@ def test_smoke_batch_surfaces_one_repeatedly_deferred_case_after_fixture_retry(t
     assert [item['plan']['id'] for item in assigned] == ['retry', 'stale', 'new', 'later']
     assert [item['previous_assignments_without_verdict'] for item in assigned
             if 'previous_assignments_without_verdict' in item] == [3]
+
+    groups = audit_supervisor.execution_packet(
+        state, plans, {'stale': 8}, smoke=True, finalize_ids=['stale'],
+    )
+    assert [item['plan']['id'] for group in groups for item in group] == ['retry', 'new', 'later']
+    for case_id in ('retry', 'new', 'later'):
+        state['smoke'][case_id] = {'result': {'status': 'passed'}}
+    groups = audit_supervisor.execution_packet(
+        state, plans, {'stale': 8}, smoke=True, finalize_ids=['stale'],
+    )
+    assert [item['plan']['id'] for group in groups for item in group] == ['stale']
 
 
 def test_smoke_supervisor_continues_after_new_verified_checkpoint_but_stops_on_duplicate(tmp_path, monkeypatch):

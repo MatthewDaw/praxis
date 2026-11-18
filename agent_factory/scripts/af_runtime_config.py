@@ -60,10 +60,11 @@ def settings(values: dict) -> dict:
         local_recovery = result.get('audit_smoke_local_recovery', False)
         if type(local_recovery) is not bool or (local_recovery and not result['audit_smoke_pass']):
             raise ValueError('audit_smoke_local_recovery requires smoke mode and a boolean flag')
-        case_ids = result.get('audit_smoke_case_ids')
-        if case_ids is not None and (not result['audit_smoke_pass'] or not isinstance(case_ids, list)
-                                    or any(not isinstance(i, str) or not i for i in case_ids)):
-            raise ValueError('audit_smoke_case_ids must list original IDs in smoke mode')
+        for key in ('audit_smoke_case_ids', 'audit_smoke_finalize_ids'):
+            case_ids = result.get(key)
+            if case_ids is not None and (not result['audit_smoke_pass'] or not isinstance(case_ids, list)
+                                        or any(not isinstance(i, str) or not i for i in case_ids)):
+                raise ValueError(f'{key} must list original IDs in smoke mode')
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,95}', result.get('audit_run', '')):
             raise ValueError('audit_run must name an explicit Praxis run')
         if not Path(result.get('audit_prompt_file', '')).is_absolute():

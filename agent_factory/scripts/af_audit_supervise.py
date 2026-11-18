@@ -191,7 +191,8 @@ def supervise(config: dict, env: dict, *, sleep=time.sleep) -> int:
                 queue_state = {**before, "run_meta": {**before["run_meta"], "queue_deferrals": {
                     "identity": plan.get("deferred_identity_ids", []), "external": plan.get("deferred_external_ids", []),
                 }}}
-                packets = execution_packet(queue_state, preparation, assignments, smoke=smoke)
+                packets = execution_packet(queue_state, preparation, assignments, smoke=smoke,
+                                           finalize_ids=config.get('audit_smoke_finalize_ids', ()))
                 if packets:
                     assignments.update(item["plan"]["id"] for group in packets for item in group)
                     if smoke:
