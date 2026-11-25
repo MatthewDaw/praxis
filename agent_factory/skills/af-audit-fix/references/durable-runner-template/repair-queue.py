@@ -11,7 +11,7 @@ import time
 
 import importlib.util
 
-runner_path = Path(__file__).with_name("mvpvu-audit-supervisor.py")
+runner_path = Path(__file__).with_name("audit-supervisor.py")
 spec = importlib.util.spec_from_file_location("audit_runner", runner_path)
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
@@ -24,6 +24,8 @@ CANDIDATES = ROOT / "repair-candidates"
 SAFE_SOURCE = re.compile(r"mvpvu/(apps/(web|api)/src|packages/(contracts|domain)/src)/[A-Za-z0-9_./-]+$")
 SKIP_SENSITIVE = re.compile(r"(^|/)(auth|authorization|security|permissions|access)(/|$)", re.IGNORECASE)
 MAX_ATTEMPTS = 3
+TARGET = "consolidation"   # the branch land.sh fast-forwards into
+MAX_OPEN_LANES = 3        # never hold more repair worktrees than this at once
 
 
 def git(directory, *args):
@@ -134,6 +136,57 @@ Write {turn_dir}/handoff.md before ending. No ungrounded success claim.
         runner.write_json(status_path, state)
 
 
+def landed(branch):
+    """True when the lane branch is fully contained in the landing target."""
+    return subprocess.run(["/usr/bin/git", "-C", str(REVIEW), "merge-base", "--is-ancestor", branch, TARGET],
+                          capture_output=True, timeout=20).returncode == 0
+
+
+def remove_lane(lane, branch):
+    subprocess.run(["/usr/bin/git", "-C", str(REVIEW), "worktree", "remove", "--force", str(lane)],
+                   capture_output=True, timeout=120)
+    # -d (not -D) refuses unless the branch is fully landed: the safety check.
+    subprocess.run(["/usr/bin/git", "-C", str(REVIEW), "branch", "-d", branch], capture_output=True, timeout=20)
+    subprocess.run(["/usr/bin/git", "-C", str(REVIEW), "worktree", "prune"], capture_output=True, timeout=20)
+
+
+def reap_lanes():
+    """Every wake: delete the worktree of each repair that has landed or was given up.
+
+    Only lanes this queue created (recorded in its own candidate files) are touched. A landed lane is
+    removed with its branch. A lane that is blocked, exhausted or abandoned keeps its BRANCH (commit any
+    work first) but loses its worktree, so disk is reclaimed and nothing unlanded is lost.
+    Returns the number of repair worktrees still open."""
+    open_lanes = 0
+    for candidate in CANDIDATES.glob("*.json"):
+        try:
+            state = json.loads(candidate.read_text())
+        except ValueError:
+            continue
+        lane = Path(state.get("lane", ""))
+        if not state.get("lane") or not lane.exists() or state.get("worktree_removed"):
+            continue
+        branch = f"lane-{lane.name[len('lane-'):]}" if lane.name.startswith("lane-") else lane.name
+        try:
+            finished = landed(branch)
+            given_up = state.get("state") in {"retry_exhausted", "abandoned", "landed", "superseded"}
+            if finished or given_up:
+                if not finished:
+                    dirty = git(lane, "status", "--porcelain", "--untracked-files=no")
+                    if dirty:
+                        git(lane, "add", "-u")
+                        git(lane, "commit", "-q", "-m", f"WIP: repair {candidate.stem} saved before worktree cleanup")
+                remove_lane(lane, branch)
+                state.update(worktree_removed=time.time(),
+                             state="landed" if finished else state.get("state"))
+                runner.write_json(candidate, state)
+                continue
+        except (OSError, subprocess.SubprocessError):
+            pass
+        open_lanes += 1
+    return open_lanes
+
+
 if __name__ == "__main__":
     if runner.PAUSE.exists():
         raise SystemExit(0)
@@ -144,6 +197,8 @@ if __name__ == "__main__":
             raise SystemExit(0)
         CANDIDATES.mkdir(mode=0o700, exist_ok=True)
         revision = runtime_revision()
+        if reap_lanes() >= MAX_OPEN_LANES:
+            raise SystemExit(0)   # land or give up open repairs before creating more worktrees
         for request in sorted(runner.HANDOFF.glob("*.json"), key=lambda path: path.stat().st_mtime):
             candidate = CANDIDATES / request.name
             state = json.loads(candidate.read_text()) if candidate.exists() else {}

@@ -24,7 +24,7 @@ the audit's own directory (`~/.praxis/audits/<run>/durable/`) and change only th
 | File | Role |
 |---|---|
 | `audit-supervisor.py` | One wake: check the pause file and lease, verify the Praxis run is auditing the pinned build, choose the next batch, run one bounded Codex turn, submit records, queue confirmed failures, update `checkpoint.json`. `--smoke` runs a one-command health turn |
-| `repair-queue.py` | One wake: take the next `fix-handoff` case, run a bounded Codex repair turn in that case's own worktree, write `repair-candidates/<case>.json` with files, targeted checks and the focused recheck |
+| `repair-queue.py` | One wake: first reap finished repair worktrees (`reap_lanes()`: remove landed lanes with their branch; for given-up lanes save work on the branch and remove the worktree) and stop if 3 are still open; then take the next `fix-handoff` case, run a bounded Codex repair turn in that case's own worktree, write `repair-candidates/<case>.json` with files, targeted checks and the focused recheck |
 | `audit.plist`, `repair.plist` | LaunchAgents (`StartInterval` 45 and 60) pointing at the two scripts |
 | `audit-stack.sh` | Starts, stops and reports the disposable app stack (its own ports and database); tracks only its own pids and never touches the developer's ports |
 | `recover-stack.sh`, `record-results.sh` | Restart missing audit listeners on the same database; record turn results |

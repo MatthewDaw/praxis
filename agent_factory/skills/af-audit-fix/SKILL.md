@@ -257,6 +257,25 @@ revision and explicit `blocking_prerequisites` such as `controlled-inbox` or
 provider. Genuine unavailable external prerequisites may still yield a partial
 audit, with their fresh evidence retained.
 
+## Worktree lifecycle (mandatory)
+
+Every worktree an audit run creates is temporary and must be removed as soon as its work is finished; a run
+that leaves worktrees behind is not complete. This applies to the coordinator, every repair worker and
+every sub-agent.
+
+| When | Action |
+|---|---|
+| Before creating a worktree | Record it (path, branch, purpose, case id) in the run's manifest, for example `durable/worktrees.json`, and check the cap: at most 3 open repair worktrees per run. At the cap, land or give up an open repair before creating another. Check free disk first; stop creating worktrees below 20 GB free |
+| Repair landed (branch is an ancestor of the landing target, e.g. `git merge-base --is-ancestor <branch> <target>`) | Immediately `git worktree remove --force <path>`, then `git branch -d <branch>` (`-d`, never `-D`: it refuses unless fully landed), then `git worktree prune`; mark it removed in the manifest |
+| Repair blocked, retry-exhausted, superseded or abandoned | Commit any uncommitted work on its branch as a WIP commit, then remove the worktree but KEEP the branch, and list the branch in the report for the owner |
+| Pinned audit build worktree | Keep it only while its run is active; remove it when the run is finished or replaced by a new pin |
+| Every wake of the durable runner and every coordinator check-in | Reap: remove every manifest worktree whose branch has landed or whose repair was given up (the template's `repair-queue.py` does this in `reap_lanes()`) |
+| End of the run | `git worktree list` and `git branch --no-merged <target>`: anything still listed that this run created must be removed or reported with a reason |
+
+Never remove a worktree this run did not create (only manifest entries), never remove one whose branch has
+commits not on the target unless they are first saved as a branch, and never touch the project's main
+checkout or long-lived lanes the owner keeps (for MVPVU: `website-2` and `ui-lane`).
+
 ## Fix, deploy and re-audit
 
 Freeze the initial audit report and failed case IDs before fixing. Create located
@@ -278,7 +297,7 @@ credential handling or another project's service. Confirm a real model turn and
 browser action after disconnect/reconnect before reporting a running remote audit.
 
 Finish with coverage counts, unresolved failures and blockers, evidence locations,
-fix/deployment revisions, failed-case re-audit and cleanup results. Remove run-owned
+fix/deployment revisions, failed-case re-audit and cleanup results, including the worktrees created and removed and any left with a reason. Remove run-owned
 active fixtures; retain required immutable audit evidence and report that retention.
 Never describe partial or blocked coverage as testing every feature successfully.
 
