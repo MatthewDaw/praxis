@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.mvpvu.praxis-audit-993b78598d2c</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Library/Frameworks/Python.framework/Versions/3.13/bin/python3</string>
+		<string>/Users/matthewdaw/.praxis/audits/mvpvu-post-adoption.fCrGmGjh/durable/mvpvu-audit-supervisor.py</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/matthewdaw/.praxis/audits/mvpvu-post-adoption.fCrGmGjh/durable/launchd.stderr.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/matthewdaw/.praxis/audits/mvpvu-post-adoption.fCrGmGjh/durable/launchd.stdout.log</string>
+	<key>StartInterval</key>
+	<integer>45</integer>
+	<key>WorkingDirectory</key>
+	<string>/Users/matthewdaw/.praxis/audits/mvpvu-post-adoption.fCrGmGjh/durable</string>
+</dict>
+</plist>

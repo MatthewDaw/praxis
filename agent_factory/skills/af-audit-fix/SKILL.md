@@ -18,6 +18,8 @@ an unrecorded pass. Confirm the explicit project and tenant before writes.
 Fix tickets follow FIND → CLAIM → RESOLVE applicable checks by query → BUILD →
 VERIFY external signals → FINISH. Do not place authored check lists on tickets.
 
+For any long local audit, run it with the durable launchd runner in `references/durable-local-runner.md` (a supervisor that takes one bounded, ephemeral `codex exec --ignore-user-config` turn of up to four cases every 45 seconds against a pinned disposable stack, plus a separate repair queue). Do not run a long audit as an interactive looping agent session; that is the slow path. A working template is in `references/durable-runner-template/`.
+
 ## Prepare and audit
 
 1. Resolve repository, deployed URL, exact build revision, roles, supported sports
